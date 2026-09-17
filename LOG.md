@@ -1,0 +1,81 @@
+# Project log (public)
+
+This is the working log of the qca9377-macos project, sanitized of any
+machine-specific identifiers. It exists to show the methodology: every
+decision recorded, every check shown, nothing asserted from memory when a
+pinned source could be consulted.
+
+## Method rules the project runs under
+
+1. Log everything — decisions, commands, outputs.
+2. Check after every change; a change without a recorded check is not done.
+3. Hardware is read-only while the Linux driver owns it; ground truth is
+   captured by observation only (lspci/sysfs/dmesg/ethtool/iw).
+4. No artifact without a hash — sources and firmware are sha256-pinned.
+5. License hygiene — ath10k is ISC (adaptable); GPL sources are studied
+   but never copied.
+6. Expectation honesty — this is a weeks-to-months project; sessions are
+   scoped modestly.
+
+## Session 1 — scaffold
+
+- Project repo created with `ref/ firmware/ skeleton/ docs/ logs/`.
+- Rules above written down and agreed before any work.
+
+## Session 2 — ground truth, pins, M1 skeleton
+
+- Tool inventory; one privileged, audited, strictly read-only dump
+  captured the full hardware picture (dmesg probe trace, PCI
+  capabilities, MSI, wireless caps). See `docs/REFERENCE-TRACE.md`.
+- Firmware gap found and fixed from evidence: the probe trace shows
+  **api 6** firmware and **board api 2** — so the bundle needed
+  `firmware-6.bin` + `board-2.bin`, not just `firmware-5.bin`. The
+  firmware's embedded version string was verified byte-identical to the
+  trace line.
+- References pinned: linux-7.2.3 tarball (sha256 in `ref/`), extracted
+  ath10k sources verified 64/64 files ISC; itlwm pinned for study only
+  (GPLv2 — nothing copied).
+- Register constants for the skeleton extracted from the pinned
+  `qca6174_regs` table (QCA9377 reuses it per `core.c`) with file:line
+  citations in the driver header, then **machine-verified** by a checker
+  that re-parses both sides. The checker itself initially grabbed the
+  wrong register table (qca988x) and failed loudly — exactly what
+  cross-checks are for.
+- Wake timeout corrected to 30 ms (`pci.h:201`) after initially assuming
+  20 ms.
+- M1 skeleton written: match `pci168c,42`, map BAR0, ath10k wake
+  protocol, read chip_id / fw_indicator / PCIE_BAR_REG / CE0 word.
+  Read-only except the single `PCIE_SOC_WAKE` write — the same write
+  ath10k performs before any hardware init.
+- A log-hygiene incident: sequential edits to the private log scrambled
+  its section order; fixed by full rewrite. Lesson: append-heavy
+  documents get rewrites, not repeated patches.
+
+## Session 3 — build pipeline prep
+
+- The "free CI" plan was evaluated claim-by-claim against the actual
+  development machine rather than trusted: GH Actions macOS runners
+  adopted; VFIO passthrough rejected for this host (no IOMMU groups, and
+  the host network rides the card under test); Xcode-in-VM rejected on
+  RAM/disk. Honest caveat recorded: a VM without passthrough cannot run
+  the probe (no `pci168c,42` present), so the M1 verdict requires the
+  real machine booted into macOS.
+- License narrative corrected from an external plan: this port is
+  ISC-derived, not GPL-obligated. Publishing is a choice — and keeping
+  GPL code out is what preserves that choice.
+- xcodegen verified to have no kernel-extension product type (checked in
+  the PBXProductType enum of the xcodeproj library it uses); the spec
+  uses bundle + `WRAPPER_EXTENSION=kext` + `-fapple-kext` + `-lkmod
+  -Wl,-kext`.
+- CI workflow fixed before first run: an `|| true` was swallowing build
+  failures; `-target` replaced `-scheme`; contradictory signing settings
+  removed.
+- Publishing gate defined: machine identifiers are hard-excluded, a
+  privacy grep must pass with zero hits before anything leaves the
+  machine, and the staging tree carries no git history.
+
+## Next
+
+- M1 verdict on real hardware (`chip_id == 0x003821ff` in the boot log).
+- M2: Copy Engine rings + BMI handshake, ported from the pinned
+  `ce.c`/`pci.c`.

@@ -1,0 +1,39 @@
+# project.yml - XcodeGen spec for the QCA9377 M1 skeleton kext.
+# CI (and any Mac) runs: xcodegen generate && xcodebuild -project QCA9377.xcodeproj
+#   -scheme QCA9377 -configuration Release build
+#
+# Note: xcodegen has no native "kernel-extension" product type (verified:
+# tuist/xcodeproj PBXProductType enum has no com.apple.product-type.kernel-
+# extension case), so we use product-type bundle + WRAPPER_EXTENSION=kext,
+# kernel cflags, and -lkmod -Wl,-kext to produce a loadable kext.
+name: QCA9377
+options:
+  bundleIdPrefix: com.bswork
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+targets:
+  QCA9377:
+    type: bundle
+    platform: macOS
+    sources:
+      - path: skeleton/QCA9377Driver.cpp
+    settings:
+      base:
+        PRODUCT_NAME: QCA9377
+        WRAPPER_EXTENSION: kext
+        PRODUCT_BUNDLE_IDENTIFIER: com.bswork.QCA9377
+        INFOPLIST_FILE: skeleton/Info.plist
+        # Kernel-extension compile/link flags (what Xcode's kext template emits):
+        OTHER_CFLAGS: "$(inherited) -fapple-kext -fno-exceptions -fno-rtti -fno-check-new -fvisibility=hidden -mkernel"
+        OTHER_LDFLAGS: "$(inherited) -lkmod -Wl,-kext"
+        CLANG_CXX_LIBRARY: libc++
+        GCC_PREPROCESSOR_DEFINITIONS: "$(inherited) KERNEL=1 KERNEL_PRIVATE=1 DRIVER_PRIVATE=1 _KERNEL=1"
+        HEADER_SEARCH_PATHS: "$(inherited) $(SDKROOT)/System/Library/Frameworks/Kernel.framework/Headers"
+        SDKROOT: macosx
+        # Ad-hoc-free: signing disabled outright; ad-hoc signature is applied
+        # later only if the target system requires it (see README).
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGNING_ALLOWED: NO
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        ARCHS: x86_64

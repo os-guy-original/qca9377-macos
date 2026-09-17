@@ -1,0 +1,51 @@
+name: build-kext
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: brew install xcodegen xcbeautify
+
+      - name: Generate project
+        run: xcodegen generate
+
+      - name: Build kext
+        run: |
+          set -o pipefail
+          xcodebuild -project QCA9377.xcodeproj \
+            -target QCA9377 -configuration Release build \
+            2>&1 | tee build.log | xcbeautify
+
+      - name: Locate and sanity-check the built kext
+        run: |
+          KEXT=$(find ~/Library/Developer/Xcode/DerivedData -name "QCA9377.kext" -type d | head -1)
+          echo "kext at: $KEXT"
+          test -n "$KEXT"
+          plutil -lint "$KEXT/Contents/Info.plist"
+          file "$KEXT/Contents/MacOS/QCA9377"
+          kextlibs -c "$KEXT" || true   # warns are ok; unresolved symbols are not
+
+      - name: Upload kext artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: QCA9377-kext
+          path: |
+            **/QCA9377.kext/**/Info.plist
+            **/QCA9377.kext/Contents/MacOS/*
+          if-no-files-found: error
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log

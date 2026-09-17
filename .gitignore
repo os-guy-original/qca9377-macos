@@ -1,0 +1,9 @@
+# Pinned reference sources - reproducible from the recorded hashes/commits,
+# too large or nested for this repo:
+ref/itlwm/
+ref/linux-7.2.3.tar.xz
+ref/linux-7.2.3.tar.sign
+
+# Workspace scratch
+logs/
+*.log
