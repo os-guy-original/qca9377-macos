@@ -27,7 +27,9 @@ targets:
         # Kernel-extension compile/link flags (what Xcode's kext template emits):
         OTHER_CFLAGS: "$(inherited) -fapple-kext -fno-exceptions -fno-rtti -fno-check-new -fvisibility=hidden -mkernel"
         OTHER_LDFLAGS: "$(inherited) -lkmod -Wl,-kext"
-        CLANG_CXX_LIBRARY: libc++
+        # NOTE: no CLANG_CXX_LIBRARY here - linking userspace libc++ into a
+        # kext fails ("library not found for -lc++") and would be wrong even
+        # if it linked; the kernel provides its own C++ runtime via libkern.
         GCC_PREPROCESSOR_DEFINITIONS: "$(inherited) KERNEL=1 KERNEL_PRIVATE=1 DRIVER_PRIVATE=1 _KERNEL=1"
         HEADER_SEARCH_PATHS: "$(inherited) $(SDKROOT)/System/Library/Frameworks/Kernel.framework/Headers"
         SDKROOT: macosx
