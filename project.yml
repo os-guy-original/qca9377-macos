@@ -26,11 +26,11 @@ targets:
         INFOPLIST_FILE: skeleton/Info.plist
         # Kernel-extension compile/link flags (what Xcode's kext template emits):
         OTHER_CFLAGS: "$(inherited) -fapple-kext -fno-exceptions -fno-rtti -fno-check-new -fvisibility=hidden -mkernel"
-        # -nostdlib++ is required: the clang++ driver links libc++ by default
-        # for C++ targets, and a generic 'bundle' product gets userspace link
-        # behavior (run 35283350787: 'library not found for -lc++'). Kernel
-        # C++ (OSObject etc.) resolves via the kmod/kernel link, not libc++.
-        OTHER_LDFLAGS: "$(inherited) -nostdlib++ -lkmod -Wl,-kext"
+        # -nostdlib removes ALL userspace defaults (crt, -lSystem, -lc++);
+        # -lkmodc++/-lkmod provide the kernel-side glue every kext links
+        # (C++ support stubs, kmod start/stop, __start entry). This is the
+        # classic command-line kext link recipe.
+        OTHER_LDFLAGS: "$(inherited) -nostdlib -lkmodc++ -lkmod -Wl,-kext"
         # NOTE: no CLANG_CXX_LIBRARY here - linking userspace libc++ into a
         # kext fails ("library not found for -lc++") and would be wrong even
         # if it linked; the kernel provides its own C++ runtime via libkern.
