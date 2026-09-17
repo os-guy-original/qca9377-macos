@@ -24,15 +24,16 @@ jobs:
       - name: Build kext
         run: |
           set -o pipefail
+          # Legacy -target builds place products under SYMROOT (not
+          # DerivedData); make it explicit so later steps are deterministic.
           xcodebuild -project QCA9377.xcodeproj \
-            -target QCA9377 -configuration Release build \
+            -target QCA9377 -configuration Release SYMROOT=build build \
             2>&1 | tee build.log | xcbeautify
+          test -d build/Release/QCA9377.kext
 
       - name: Locate and sanity-check the built kext
         run: |
-          KEXT=$(find ~/Library/Developer/Xcode/DerivedData -name "QCA9377.kext" -type d | head -1)
-          echo "kext at: $KEXT"
-          test -n "$KEXT"
+          KEXT=build/Release/QCA9377.kext
           plutil -lint "$KEXT/Contents/Info.plist"
           file "$KEXT/Contents/MacOS/QCA9377"
           kextlibs -c "$KEXT" || true   # warns are ok; unresolved symbols are not
@@ -41,9 +42,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: QCA9377-kext
-          path: |
-            **/QCA9377.kext/**/Info.plist
-            **/QCA9377.kext/Contents/MacOS/*
+          path: build/Release/QCA9377.kext/Contents/**
           if-no-files-found: error
 
       - name: Upload build log on failure
