@@ -31,6 +31,11 @@ targets:
         # (C++ support stubs, kmod start/stop, __start entry). This is the
         # classic command-line kext link recipe.
         OTHER_LDFLAGS: "$(inherited) -nostdlib -lkmodc++ -lkmod -Wl,-kext"
+        # The generic bundle product injects -rpath (userspace-only concept);
+        # a kext link rejects it ("-rpath can only be used when creating a
+        # dynamic final linked image", run 35283627277). Kill it.
+        LD_RUNPATH_SEARCH_PATHS: ""
+        LD_RUNPATH: ""
         # NOTE: no CLANG_CXX_LIBRARY here - linking userspace libc++ into a
         # kext fails ("library not found for -lc++") and would be wrong even
         # if it linked; the kernel provides its own C++ runtime via libkern.
