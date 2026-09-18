@@ -36,6 +36,10 @@ jobs:
           KEXT=build/Release/QCA9377.kext
           plutil -lint "$KEXT/Contents/Info.plist"
           file "$KEXT/Contents/MacOS/QCA9377"
+          nm "$KEXT/Contents/MacOS/QCA9377" | grep -q "_kmod_info" || {
+            echo "FATAL: _kmod_info symbol missing — OpenCore prelink injection rejects such kexts (Invalid Parameter)"
+            exit 1
+          }
           kextlibs -c "$KEXT" || true   # warns are ok; unresolved symbols are not
 
       - name: Upload kext artifact

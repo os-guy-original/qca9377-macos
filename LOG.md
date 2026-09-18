@@ -79,3 +79,26 @@ pinned source could be consulted.
 - M1 verdict on real hardware (`chip_id == 0x003821ff` in the boot log).
 - M2: Copy Engine rings + BMI handshake, ported from the pinned
   `ce.c`/`pci.c`.
+
+## Sessions 4-8 (2026-09-18) — published, first boot test, kmod_info fix
+
+- Repo published, CI taken green through four documented iterations
+  (runner/SDK mismatch, userspace libc++ linkage, -rpath rejection,
+  SYMROOT product placement). Kext artifact verified end-to-end:
+  plutil OK, `Mach-O 64-bit x86_64 kext bundle`, fully resolved.
+- First real-hardware boot test: Recovery booted, but the kext never
+  loaded. OpenCore's log held the answer (the only DEBUG_WARN line that
+  survives a RELEASE build): `Prelinked injection QCA9377.kext -
+  Invalid Parameter`.
+- Root cause (verified against OpenCore 1.0.7 source): the binary has
+  no `_kmod_info` symbol. `-nostdlib` only pulls archive members to
+  resolve undefined symbols, and the skeleton references nothing from
+  libkmod — so libkmod's kmod_info definition was never linked. OC's
+  prelinker finds `VirtualKmod == 0` and rejects the kext. Reference
+  kexts built the standard way (identical Mach-O shape) all carry
+  `_kmod_info` and inject fine.
+- Fix: `-Wl,-u,_kmod_info` forces the libkmod member in; the CI sanity
+  step now fails the build if `_kmod_info` is absent.
+- Operational lesson: capture tooling that writes to the recovery RAM
+  disk must be delivered to external storage before rebooting, or the
+  data is lost.
