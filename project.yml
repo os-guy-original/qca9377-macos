@@ -26,17 +26,15 @@ targets:
         INFOPLIST_FILE: skeleton/Info.plist
         # Kernel-extension compile/link flags (what Xcode's kext template emits):
         OTHER_CFLAGS: "$(inherited) -fapple-kext -fno-exceptions -fno-rtti -fno-check-new -fvisibility=hidden -mkernel"
-        # -nostdlib removes ALL userspace defaults (crt, -lSystem, -lc++).
-        # -lkmodc++/-lkmod provide the kernel-side glue every kext links
-        # (C++ support stubs, kmod start/stop, __start entry). This is the
-        # classic command-line kext link recipe.
-        # -Wl,-u,_kmod_info: with -nostdlib, archive members are only pulled
-        # to resolve undefined symbols; the driver references nothing from
-        # libkmod, so its kmod_info definition was never linked in. OC's
-        # prelinker then finds VirtualKmod==0 and rejects the kext
+        # -nostdlib removes ALL userspace defaults (crt, -lSystem, -lc++);
+        # -lkmodc++/-lkmod provide the kernel-side glue (C++ support stubs).
+        # kmod_info is NOT in libkmod — the driver defines it in source
+        # (skeleton/QCA9377Driver.cpp, classic command-line kext recipe);
+        # without a defined kmod_info, OC's prelinker rejects the kext
         # ("Prelinked injection ... Invalid Parameter" — boot test
-        # 2026-09-18). -u forces the libkmod member defining kmod_info in.
-        OTHER_LDFLAGS: "$(inherited) -nostdlib -lkmodc++ -lkmod -Wl,-u,_kmod_info -Wl,-kext"
+        # 2026-09-18). Do not add -u _kmod_info: with -kext mode it only
+        # records a hollow undefined reference (verified 2026-09-18).
+        OTHER_LDFLAGS: "$(inherited) -nostdlib -lkmodc++ -lkmod -Wl,-kext"
         # The generic bundle product injects -rpath (userspace-only concept);
         # a kext link rejects it ("-rpath can only be used when creating a
         # dynamic final linked image", run 35283627277). Kill it.

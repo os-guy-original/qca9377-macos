@@ -18,6 +18,7 @@
 #include <libkern/OSDebug.h>
 #include <libkern/OSKextLib.h>
 #include <IOKit/IOLib.h>
+#include <mach/kmod.h>
 
 #define super IOService
 OSDefineMetaClassAndStructors(com_bswork_QCA9377, IOService)
@@ -185,3 +186,46 @@ void com_bswork_QCA9377::logRevisionInfo(void)
     // in pci.c:3441 ("MS(chip_id, SOC_CHIP_ID_REV)") in the pinned source.
     IOLog("QCA9377: logRevisionInfo - reserved for M2\n");
 }
+
+// ---------------------------------------------------------------------------
+// kmod linkage - the classic command-line kext recipe. libkmod does NOT
+// define kmod_info; every kext must define it (XNU osfmk/mach/kmod.h).
+// OpenCore's prelinker locates this symbol to wire _PrelinkKmodInfo; a
+// kext without a defined kmod_info is rejected at injection with
+// "Prelinked injection ... Invalid Parameter" (boot test 2026-09-18).
+// ---------------------------------------------------------------------------
+
+extern "C" {
+
+__attribute__((visibility("default")))
+kern_return_t qca9377_kmod_start(kmod_info_t *, void *)
+{
+    return KERN_SUCCESS;
+}
+
+__attribute__((visibility("default")))
+kern_return_t qca9377_kmod_stop(kmod_info_t *, void *)
+{
+    return KERN_SUCCESS;
+}
+
+__attribute__((visibility("default")))
+kmod_start_func_t *_realmain = qca9377_kmod_start;
+
+__attribute__((visibility("default")))
+kmod_stop_func_t *_antimain = qca9377_kmod_stop;
+
+__attribute__((visibility("default")))
+kmod_info_t kmod_info = {
+    0,                     // next (the kernel chains modules)
+    KMOD_INFO_VERSION,     // struct format version
+    0,                     // id (assigned by the kernel)
+    "com.bswork.QCA9377",  // matches Info.plist CFBundleIdentifier
+    "0.1.0",               // matches CFBundleShortVersionString
+    -1,                    // reference count (kernel-managed)
+    0, 0, 0, 0,            // referenceList, address, size, hdrSize
+    qca9377_kmod_start,
+    qca9377_kmod_stop
+};
+
+} // extern "C"

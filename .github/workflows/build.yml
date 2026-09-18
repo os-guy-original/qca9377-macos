@@ -38,8 +38,8 @@ jobs:
           KEXT=build/Release/QCA9377.kext
           plutil -lint "$KEXT/Contents/Info.plist"
           file "$KEXT/Contents/MacOS/QCA9377"
-          nm "$KEXT/Contents/MacOS/QCA9377" | grep -q "_kmod_info" || {
-            echo "FATAL: _kmod_info symbol missing — OpenCore prelink injection rejects such kexts (Invalid Parameter)"
+          nm "$KEXT/Contents/MacOS/QCA9377" | awk '$3=="_kmod_info" && $2!="U"{found=1} END{exit !found}' || {
+            echo "FATAL: _kmod_info not DEFINED — OpenCore prelink injection rejects kexts without a real kmod_info (Invalid Parameter)"
             exit 1
           }
           kextlibs -c "$KEXT" || true   # warns are ok; unresolved symbols are not
