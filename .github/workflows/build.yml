@@ -12,6 +12,8 @@ jobs:
     # ("Unable to read project", exit 74) - seen on run 35283135540.
     runs-on: macos-15
     timeout-minutes: 20
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -48,6 +50,20 @@ jobs:
           name: QCA9377-kext
           path: build/Release/QCA9377.kext/Contents/**
           if-no-files-found: error
+
+      - name: Attach kext to rolling release
+        # download-artifact endpoints need auth; public release assets do
+        # not. The dev machine has no HTTPS token (SSH-only gh), so the
+        # artifact must be fetchable with plain curl.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd build/Release
+          zip -qry QCA9377.kext.zip QCA9377.kext
+          cd ../..
+          gh release delete kext-latest --yes --cleanup-tag || true
+          gh release create kext-latest build/Release/QCA9377.kext.zip \
+            --target "$GITHUB_SHA" --title "kext build" --notes "rolling CI artifact"
 
       - name: Upload build log on failure
         if: failure()
