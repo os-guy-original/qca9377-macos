@@ -35,6 +35,16 @@ for us.)
 | `board_file api 2` | `board-2.bin` format | M3 |
 | `htt-ver 3.56 wmi-op 4 htt-op 3` | WMI/HTT protocol negotiation complete | M3 |
 
+## v0.2.0 additions — what each new line proves
+
+| Line | Meaning | Source of constants |
+|---|---|---|
+| `fw_indicator = 0x… [EVENT_PENDING/INITIALIZED]` (or `(0 = cold target)`) | SCRATCH_3 state left by whatever ran the card last; `0` = firmware never started (ideal M1 condition) | `hw.h:984-987` (bits 1/2) |
+| `CE<n> srBase=… srNent=… drBase=… drNent=… srW=… drW=… SRRI=… DRRI=…` ×8 | per-CE ring state as the kext sees it; non-zero bases/indexes = a previous OS configured the rings (warm boot) | `ce.h:341` (base), `hw.c:462-476` (qcax_ce_regs offsets) |
+| `CE wrapper intr summary = 0x…` | wrapper interrupt summary register (ce.h:374); non-zero = pending CE interrupts at boot | same |
+| `SoC revision <n> (hw1.x), pci rev-id 0x…` | chip-id revision field decode (bits 11:8) cross-checked with PCI config rev | `hw.h:70-72,916-917` |
+| `SUMMARY ok=1 version=0.2.0 pciRev=…` | single machine-friendly verdict line for capture tooling | — |
+
 ## Generic PCI facts of this card family
 
 - BAR0: 2 MiB, 64-bit, non-prefetchable memory

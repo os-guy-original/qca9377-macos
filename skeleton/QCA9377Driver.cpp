@@ -58,6 +58,7 @@ bool com_bswork_QCA9377::start(IOService *provider)
           fPci->configRead8(0x08),           // revision
           fPci->configRead16(0x2C),          // subsystem vendor
           fPci->configRead16(0x2E));         // subsystem device
+    fPciRev = fPci->configRead8(0x08);     // saved for logRevisionInfo
 
     // BAR0: 64-bit, non-prefetchable MMIO at config offset 0x10.
     // Ground truth (docs/hardware-ground-truth.txt): 0x51000000, 2 MiB.
@@ -87,6 +88,12 @@ bool com_bswork_QCA9377::start(IOService *provider)
         IOLog("QCA9377: register probe failed\n");
         return false;
     }
+
+    probeCopyEngines();
+    logRevisionInfo();
+
+    // One-line machine-friendly verdict for the sos capture to highlight.
+    IOLog("QCA9377: SUMMARY ok=1 version=0.2.0 pciRev=0x%02x\n", fPciRev);
 
     IOLog("QCA9377: M1 probe complete - staying passive (no MSI, no CE, no fw load)\n");
     registerService();
@@ -126,9 +133,9 @@ void com_bswork_QCA9377::write32(uint32_t offset, uint32_t value)
 bool com_bswork_QCA9377::isAwake(void)
 {
     // ath10k checks RTC_STATE_V_GET(read32(RTC_STATE_ADDRESS)) against
-    // rtc_state_val_on (=3 for the qca6174 value set, hw.c:154).
+    // rtc_state_val_on (=3 for qca6174, hw.c:153).
     uint32_t state = read32(kPCIe_LocalBaseAddress + 0x00000000);
-    return ((state & 0x00000007) == 3); // RTC_STATE_V_MASK=0x7, V_ON=3
+    return ((state & 0x00000007) == kRTCStateValOn); // RTC_STATE_V_MASK=0x7
 }
 
 bool com_bswork_QCA9377::wakeTarget(void)
@@ -156,35 +163,74 @@ bool com_bswork_QCA9377::wakeTarget(void)
 bool com_bswork_QCA9377::probeRegisters(void)
 {
     // 1. SOC chip id: ath10k reads BAR0 + RTC_SOC_BASE + 0xf0
-    //    (pci.c:691-694 + hw.c:60). dmesg ground truth: "qca9377 hw1.1
-    //    target 0x05020001 chip_id 0x003821ff sub 11ad:08a6".
+    //    (pci.c:691-694 + hw.c:60). Linux dmesg ground truth on this card:
+    //    "qca9377 hw1.1 target 0x05020001 chip_id 0x003821ff sub 11ad:08a6".
     uint32_t chipId = read32(kSOC_ChipID_Offset);
     IOLog("QCA9377: SOC chip_id = 0x%08x (Linux dmesg: 0x003821ff)\n", chipId);
 
-    // 2. Firmware indicator scratch: SOC_CORE_BASE + scratch_3 (hw.c:62).
-    //    Values 0x1234... family = firmware handshake states in ath10k.
-    //    Read-only peek: shows whether the firmware left a state behind.
+    // 2. Firmware indicator scratch: SCRATCH_3 (SOC_CORE_BASE + 0x28,
+    //    hw.c:59 -> fw_indicator 0x3a028). Bits: hw.h:986-987.
+    //    0 = firmware never started (cold) - the ideal M1 condition.
+    //    PENDING/INITIALIZED = warm boot, another OS's ath10k left state.
     uint32_t fwInd = read32(kFWIndicatorAddress);
-    IOLog("QCA9377: fw_indicator = 0x%08x\n", fwInd);
+    IOLog("QCA9377: fw_indicator = 0x%08x [%s%s] (0 = cold target)\n",
+          fwInd,
+          (fwInd & kFWIndEventPending)  ? " EVENT_PENDING" : "",
+          (fwInd & kFWIndInitialized) ? " INITIALIZED" : "");
 
     // 3. PCIE_BAR_REG (hw.h:996, read raw per pci.c:883).
     uint32_t barReg = read32(kPCIe_BARReg_Offset);
     IOLog("QCA9377: PCIE_BAR_REG = 0x%08x\n", barReg);
 
-    // 4. CE wrapper sanity: CE0..7 sit at +0x400 steps from 0x34000
-    //    (hw.c:49-57). Read one control register to prove mapping sanity.
-    uint32_t ce0 = read32(kCEWrapperBaseAddress + 0x00000400);
-    IOLog("QCA9377: CE0 base reg = 0x%08x\n", ce0);
-
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Copy engine diagnostics - READ-ONLY sweep. Per-CE base from ce.h:341
+// (CE0_BASE + stride*id); ring register offsets from qcax_ce_regs
+// (hw.c:462-476). Reads prove mapping sanity and capture ring state a
+// previous OS's ath10k may have left behind - M2 ground truth.
+// ---------------------------------------------------------------------------
+
+uint32_t com_bswork_QCA9377::ceBase(uint32_t ceId)
+{
+    return kCE0Base + kCEStride * ceId;
+}
+
+void com_bswork_QCA9377::probeCopyEngines(void)
+{
+    for (uint32_t ce = 0; ce < kCECount; ce++) {
+        uint32_t base = ceBase(ce);
+        uint32_t srBase = read32(base + kCESRBaseLo);
+        uint32_t srSize = read32(base + kCESRSize);
+        uint32_t drBase = read32(base + kCEDRBaseLo);
+        uint32_t drSize = read32(base + kCEDRSize);
+        uint32_t srIdx  = read32(base + kCESRWrIndex);
+        uint32_t drIdx  = read32(base + kCEDSTWrIndex);
+        uint32_t srri   = read32(base + kCECurrentSRRI);
+        uint32_t drri   = read32(base + kCECurrentDRRI);
+        IOLog("QCA9377: CE%u srBase=0x%08x srNent=%u drBase=0x%08x drNent=%u "
+              "srW=0x%x drW=0x%x SRRI=0x%x DRRI=0x%x\n",
+              ce, srBase, srSize, drBase, drSize, srIdx, drIdx, srri, drri);
+    }
+    uint32_t ceSum = read32(kCEWrapperBaseAddress + 0x0000); // CE_WRAPPER_INTERRUPT_SUMMARY (ce.h:374)
+    IOLog("QCA9377: CE wrapper intr summary = 0x%08x\n", ceSum);
 }
 
 void com_bswork_QCA9377::logRevisionInfo(void)
 {
-    // Reserved for M2: decode SOC_CHIP_ID fields against
-    // QCA9377_HW_1_0_CHIP_ID_REV (hw.h:81) once we cross-check masks
-    // in pci.c:3441 ("MS(chip_id, SOC_CHIP_ID_REV)") in the pinned source.
-    IOLog("QCA9377: logRevisionInfo - reserved for M2\n");
+    // SOC_CHIP_ID_REV field: bits 11:8 (hw.h:916-917). QCA6174 map
+    // (hw.h:70-72): 0=hw1.0, 1=hw1.1, 2=hw1.3. Cross-check against the
+    // PCI config-space revision (Linux reported rev 31 = 0x1f for the
+    // sub-version; the SoC rev here is the firmware-architecture one).
+    uint32_t chipId  = read32(kSOC_ChipID_Offset);
+    uint32_t socRev  = (chipId & kChipIdRev_Mask) >> kChipIdRev_LSB;
+    const char *name = "unknown";
+    if      (socRev == 0) name = "hw1.0";
+    else if (socRev == 1) name = "hw1.1";
+    else if (socRev == 2) name = "hw1.3";
+    IOLog("QCA9377: SoC revision %u (%s), pci rev-id 0x%02x\n",
+          socRev, name, fPciRev);
 }
 
 // ---------------------------------------------------------------------------
@@ -221,7 +267,7 @@ kmod_info_t kmod_info = {
     KMOD_INFO_VERSION,     // struct format version
     0,                     // id (assigned by the kernel)
     "com.bswork.QCA9377",  // matches Info.plist CFBundleIdentifier
-    "0.1.0",               // matches CFBundleShortVersionString
+    "0.2.0",               // matches CFBundleShortVersionString
     -1,                    // reference count (kernel-managed)
     0, 0, 0, 0,            // referenceList, address, size, hdrSize
     qca9377_kmod_start,

@@ -61,6 +61,37 @@ static const uint32_t kWakeTimeout_us        = 30000;  // ath10k PCIE_WAKE_TIMEO
 static const uint32_t kWakeStepStart_us      = 5;
 static const uint32_t kWakeStepMax_us        = 50;
 
+// Chip-id revision field: hw.h:916-917 (SOC_CHIP_ID_REV_LSB=8,
+// SOC_CHIP_ID_REV_MASK=0x00000f00). QCA6174 hw revision map: hw.h:70-72
+// (1_0=0, 1_1=1, 1_3=2). Linux dmesg on this card: chip_id 0x003821ff.
+static const uint32_t kChipIdRev_LSB         = 8;
+static const uint32_t kChipIdRev_Mask        = 0x00000f00;
+
+// RTC awake value: hw.c:153 (qca6174_values.rtc_state_val_on = 3).
+static const uint32_t kRTCStateValOn         = 3;
+
+// Firmware indicator bits in SCRATCH_3: hw.h:984-987.
+static const uint32_t kFWIndEventPending     = 1; // hw.h:986
+static const uint32_t kFWIndInitialized      = 2; // hw.h:987
+
+// Copy engines: hw.c:52-59 (qca6174_regs) - CE0=0x34400, CE1=0x34800,
+// stride 0x400; count = 8 (hw.c:154, qca6174_values.ce_count).
+static const uint32_t kCE0Base               = 0x00034400;
+static const uint32_t kCE1Base               = 0x00034800;
+static const uint32_t kCEStride              = kCE1Base - kCE0Base;
+static const uint32_t kCECount               = 8;
+
+// Per-CE ring register offsets: qcax_ce_regs (hw.c:462-476), the set
+// assigned to QCA6174/QCA9377 at core.c:3649-3653.
+static const uint32_t kCESRBaseLo            = 0x00; // sr_base_addr_lo
+static const uint32_t kCESRSize              = 0x04; // sr_size_addr
+static const uint32_t kCEDRBaseLo            = 0x08; // dr_base_addr_lo
+static const uint32_t kCEDRSize              = 0x0c; // dr_size_addr
+static const uint32_t kCESRWrIndex           = 0x3c; // sr_wr_index_addr
+static const uint32_t kCEDSTWrIndex          = 0x40; // dst_wr_index_addr
+static const uint32_t kCECurrentSRRI         = 0x44; // current_srri_addr
+static const uint32_t kCECurrentDRRI         = 0x48; // current_drri_addr
+
 // ---------------------------------------------------------------------------
 // Driver class
 // ---------------------------------------------------------------------------
@@ -84,6 +115,7 @@ private:
     IODeviceMemory *fBar0Mem  = nullptr;
     volatile uint32_t *fBar0  = nullptr;   // mapped BAR0
     IOByteCount     fBar0Len = 0;
+    uint8_t         fPciRev  = 0;          // PCI config-space revision ID
 
     // -- MMIO helpers (M1: plain 32-bit LE reads/writes, no windowing -
     //    matches ath10k_bus_pci_read32, pci.c:652-671, in this kernel) --
@@ -96,7 +128,10 @@ private:
 
     // -- M1 diagnostics --
     bool probeRegisters(void);   // chip id, fw indicator, boot info
-    void logRevisionInfo(void);  // decode+log chip id / target versions
+    void probeCopyEngines(void); // read-only sweep of CE0..7 ring state
+    void logRevisionInfo(void);  // decode+log chip-id revision vs PCIe rev
+
+    uint32_t ceBase(uint32_t ceId); // CE0_BASE + stride*id (ce.h:341)
 };
 
 #endif /* QCA9377Driver_hpp */
