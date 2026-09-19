@@ -19,7 +19,7 @@
 #define QCA9377_CE_hpp
 
 #include <libkern/c++/OSObject.h>   // OSIncrementAtomic etc.
-#include <IOKit/IOLib.h>            // IOMalloc/IOFree, IODelay, IOSync
+#include <IOKit/IOLib.h>            // IOMalloc/IOFree, IODelay, OSSynchronizeIO
 #include <stdint.h>
 
 // ce_desc: ce.h:44-48 (32-bit format; this chip is not target_64bit).

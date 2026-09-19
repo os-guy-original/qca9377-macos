@@ -20,7 +20,7 @@
  * Descriptor DMA semantics: the engine DMAs descriptors to/from system RAM
  * (ath10k_ce_init_src_ring memsets the host ring and hands the bus address
  * to the engine — ce.c:1369-1384). We use one physically-contiguous
- * IOMallocContiguous region, write descriptors with IOSync() fences, and
+ * IOMallocContiguous region, write descriptors with OSSynchronizeIO() fences, and
  * re-read them from RAM on completion (ce.c:756-775).
  */
 
@@ -123,7 +123,7 @@ bool CopyEngine::init()
     write32(kCE0Base + kCESRSize,   kRingN);
     write32(kCE1Base + kCEDRBaseLo, (uint32_t)dstBus);
     write32(kCE1Base + kCEDRSize,   kRingN);
-    IOSync();
+    OSSynchronizeIO();
 
     IOLog("QCA9377-CE: init sr@0x%llx dr@0x%llx n=%u "
           "(hw idx src w=%u r=%u dst w=%u r=%u)\n",
@@ -154,7 +154,7 @@ bool CopyEngine::send(const void *buf, uint32_t len)
 
     // Copy payload into the DMA buffer + fence.
     bcopy(buf, fTxCpu, len);
-    IOSync();
+    OSSynchronizeIO();
 
     // Fill descriptor at our write index (ce.c:459-463: addr/nbytes/flags;
     // META_DATA(transfer_id)=0, GATHER=0, BYTE_SWAP=0).
@@ -163,13 +163,13 @@ bool CopyEngine::send(const void *buf, uint32_t len)
     d.nbytes = (uint16_t)len;
     d.flags  = 0;
     fSrcDesc[fSrcWrite] = d;
-    IOSync();
+    OSSynchronizeIO();
 
     // Doorbell: publish the new write index (ce.c:473 — always written
     // for non-gather sends).
     fSrcWrite = (fSrcWrite + 1) & kRingMask;
     write32(kCE0Base + kCESRWrIndex, fSrcWrite);
-    IOSync();
+    OSSynchronizeIO();
 
     // Send completion: SRRI advances to our new write index.
     srri = read32(kCE0Base + kCECurrentSRRI) & kRingMask;
@@ -196,12 +196,12 @@ bool CopyEngine::recvPolling(uint32_t timeoutMs)
     d.nbytes = 0;
     d.flags  = 0;
     fDstDesc[fDstWrite] = d;
-    IOSync();
+    OSSynchronizeIO();
 
     const uint32_t posted = fDstWrite;
     fDstWrite = (fDstWrite + 1) & kRingMask;
     write32(kCE1Base + kCEDSTWrIndex, fDstWrite);   // doorbell (ce.c:676)
-    IOSync();
+    OSSynchronizeIO();
 
     const uint32_t deadline = timeoutMs * 1000 / kQCAPollStep_us;
     uint32_t drri = read32(kCE1Base + kCECurrentDRRI) & kRingMask;
@@ -222,7 +222,7 @@ bool CopyEngine::recvPolling(uint32_t timeoutMs)
     }
     fRxNbytes = d.nbytes;
     fDstSw = (fDstSw + 1) & kRingMask;
-    IOSync();
+    OSSynchronizeIO();
     return true;
 }
 
