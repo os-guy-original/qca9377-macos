@@ -23,6 +23,8 @@
 
 #include <IOKit/pci/IOPCIDevice.h>
 #include <IOKit/IOService.h>
+#include "CE.hpp"
+#include "BMI.hpp"
 
 // ---------------------------------------------------------------------------
 // Register map - every constant below is verified against the pinned ath10k
@@ -117,6 +119,10 @@ private:
     IOByteCount     fBar0Len = 0;
     uint8_t         fPciRev  = 0;          // PCI config-space revision ID
 
+    // M2: CE ring manager + BMI protocol (owned, plain C++ objects).
+    qca::CopyEngine *fCe = nullptr;
+    qca::Bmi        *fBmi = nullptr;
+
     // -- MMIO helpers (M1: plain 32-bit LE reads/writes, no windowing -
     //    matches ath10k_bus_pci_read32, pci.c:652-671, in this kernel) --
     uint32_t read32(uint32_t offset);
@@ -130,6 +136,9 @@ private:
     bool probeRegisters(void);   // chip id, fw indicator, boot info
     void probeCopyEngines(void); // read-only sweep of CE0..7 ring state
     void logRevisionInfo(void);  // decode+log chip-id revision vs PCIe rev
+
+    // -- M2: Copy Engine rings + BMI handshake --
+    bool probeBmi(void);         // CE init + GET_TARGET_INFO exchange
 
     uint32_t ceBase(uint32_t ceId); // CE0_BASE + stride*id (ce.h:341)
 };

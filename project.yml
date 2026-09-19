@@ -18,6 +18,8 @@ targets:
     platform: macOS
     sources:
       - path: skeleton/QCA9377Driver.cpp
+      - path: skeleton/CE.cpp
+      - path: skeleton/BMI.cpp
     settings:
       base:
         PRODUCT_NAME: QCA9377

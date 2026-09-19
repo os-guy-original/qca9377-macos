@@ -92,10 +92,18 @@ bool com_bswork_QCA9377::start(IOService *provider)
     probeCopyEngines();
     logRevisionInfo();
 
-    // One-line machine-friendly verdict for the sos capture to highlight.
-    IOLog("QCA9377: SUMMARY ok=1 version=0.2.0 pciRev=0x%02x\n", fPciRev);
+    // M2: bring up CE0/CE1 rings and ask the ROM who it is.
+    if (!probeBmi()) {
+        IOLog("QCA9377: M2 BMI probe failed - staying loaded for diagnostics\n");
+        // M2 NOTE: not a start() failure - M1 diagnostics still valuable;
+        // the kext stays passive and loaded.
+    }
 
-    IOLog("QCA9377: M1 probe complete - staying passive (no MSI, no CE, no fw load)\n");
+    // One-line machine-friendly verdict for the sos capture to highlight.
+    IOLog("QCA9377: SUMMARY ok=1 version=0.3.0 pciRev=0x%02x bmiTarget=0x%08x\n",
+          fPciRev, fBmi ? fBmi->targetVersion() : 0);
+
+    IOLog("QCA9377: probe complete - staying passive (no MSI, no interrupts, no fw load)\n");
     registerService();
     return true;
 }
@@ -103,6 +111,8 @@ bool com_bswork_QCA9377::start(IOService *provider)
 void com_bswork_QCA9377::stop(IOService *provider)
 {
     IOLog("QCA9377: stop\n");
+    if (fBmi) { delete fBmi; fBmi = nullptr; }   // plain C++ object
+    if (fCe)  { fCe->destroy(); fCe = nullptr; } // kernel-new object
     super::stop(provider);
 }
 
@@ -234,6 +244,34 @@ void com_bswork_QCA9377::logRevisionInfo(void)
 }
 
 // ---------------------------------------------------------------------------
+// M2: Copy Engine rings + BMI handshake. The verdict: the ROM answers
+// BMI_GET_TARGET_INFO (bmi.c:48-78) over CE0->CE1 DMA - proof the ring
+// path works end to end, with no firmware involved (BMI is pre-firmware).
+// Expected target version on this card: 0x05020001 (Linux dmesg ground
+// truth). Ordering note: our recvPolling() posts the rx buffer before
+// polling, and the target cannot complete a recv for a command it has
+// not seen, so rx-before-send-completion semantics are preserved
+// (LOG session 10).
+// ---------------------------------------------------------------------------
+
+bool com_bswork_QCA9377::probeBmi(void)
+{
+    fCe = qca::CopyEngine::create(fBar0);
+    if (!fCe || !fCe->init()) {
+        IOLog("QCA9377: CE init failed\n");
+        if (fCe) { fCe->destroy(); fCe = nullptr; }
+        return false;
+    }
+
+    fBmi = new qca::Bmi(fCe);
+    if (!fBmi || !fBmi->getTargetInfo()) {
+        IOLog("QCA9377: BMI GET_TARGET_INFO failed\n");
+        return false;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // kmod linkage - the classic command-line kext recipe. libkmod does NOT
 // define kmod_info; every kext must define it (XNU osfmk/mach/kmod.h).
 // OpenCore's prelinker locates this symbol to wire _PrelinkKmodInfo; a
@@ -267,7 +305,7 @@ kmod_info_t kmod_info = {
     KMOD_INFO_VERSION,     // struct format version
     0,                     // id (assigned by the kernel)
     "com.bswork.QCA9377",  // matches Info.plist CFBundleIdentifier
-    "0.2.0",               // matches CFBundleShortVersionString
+    "0.3.0",               // matches CFBundleShortVersionString
     -1,                    // reference count (kernel-managed)
     0, 0, 0, 0,            // referenceList, address, size, hdrSize
     qca9377_kmod_start,
