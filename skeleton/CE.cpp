@@ -149,6 +149,20 @@ void CECopyPair::freeRegion()
     fRegionPhys = 0;
 }
 
+void CECopyPair::teardown()
+{
+    // Park both rings before releasing DMA memory so the engine cannot
+    // DMA into freed RAM once this kext stops.
+    if (fBar0) {
+        write32(ceBase(fSrcCe) + kCESRBaseLo, 0);
+        write32(ceBase(fSrcCe) + kCESRSize, 0);
+        write32(ceBase(fDstCe) + kCEDRBaseLo, 0);
+        write32(ceBase(fDstCe) + kCEDRSize, 0);
+        OSSynchronizeIO();
+    }
+    freeRegion();
+}
+
 bool CECopyPair::init()
 {
     if (!fBar0 || !allocRegion())
