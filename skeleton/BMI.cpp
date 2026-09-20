@@ -17,9 +17,8 @@
 
 namespace qca {
 
-// ------------------------------------------------------------------
 // Response exchange: postRecv -> send -> recvWait (ath10k ordering).
-// ------------------------------------------------------------------
+
 bool Bmi::exchangeWait(const void *cmd, uint32_t cmdLen,
                        void *resp, uint32_t respLen, uint32_t *gotLen)
 {
@@ -40,16 +39,13 @@ bool Bmi::exchangeWait(const void *cmd, uint32_t cmdLen,
     return true;
 }
 
-// ------------------------------------------------------------------
-// M2: GET_TARGET_INFO
-// ------------------------------------------------------------------
 bool Bmi::getTargetInfo()
 {
     if (!fCe || !fCe->txBuf() || !fCe->rxBuf())
         return false;
 
     BmiCmdGetTargetInfo cmd;
-    cmd.id = kBmiGetTargetInfo;   // 4-byte command (bmi.h:128-129)
+    cmd.id = kBmiGetTargetInfo;
 
     BmiRespGetTargetInfo resp;
     if (!exchangeWait(&cmd, sizeof(cmd), &resp, sizeof(resp), nullptr))
@@ -63,8 +59,7 @@ bool Bmi::getTargetInfo()
 
 void Bmi::logTargetVersion(uint32_t version)
 {
-    // Linux ground truth on this card: "target 0x05020001" —
-    // QCA9377_HW_1_1_DEV_VERSION (hw.h:60). 0x0502 high half = qca6174
+
     // family target (docs/REFERENCE-TRACE.md).
     const char *family = "unknown";
     if ((version & 0xffff0000) == 0x05020000)
@@ -72,9 +67,6 @@ void Bmi::logTargetVersion(uint32_t version)
     IOLog("QCA9377-BMI: TARGET INFO version=0x%08x [%s]\n", version, family);
 }
 
-// ------------------------------------------------------------------
-// M3: READ_MEMORY (bmi.c:155-196)
-// ------------------------------------------------------------------
 bool Bmi::readMemory(uint32_t addr, void *out, uint32_t len)
 {
     if (!out || len == 0 || len > kBmiMaxDataSize)
@@ -93,15 +85,11 @@ bool Bmi::readMemory(uint32_t addr, void *out, uint32_t len)
     return true;
 }
 
-// ------------------------------------------------------------------
-// M3: WRITE_MEMORY (bmi.c:260-313)
-// ------------------------------------------------------------------
 bool Bmi::writeMemory(uint32_t addr, const void *buf, uint32_t len)
 {
     if (!buf || len == 0)
         return false;
 
-    // Command buffer: id + addr + len + up to 256B payload.
     struct {
         uint32_t id;
         uint32_t addr;
@@ -114,7 +102,7 @@ bool Bmi::writeMemory(uint32_t addr, const void *buf, uint32_t len)
     while (len > 0) {
         uint32_t tx = len < kBmiMaxDataSize ? len : kBmiMaxDataSize;
         bcopy(p, cmd.payload, tx);
-        uint32_t padded = (tx + 3) & ~3u;      // roundup(tx, 4), bmi.c:289
+        uint32_t padded = (tx + 3) & ~3u;
         cmd.id   = kBmiWriteMemory;
         cmd.addr = addr;
         cmd.len  = padded;
@@ -122,19 +110,16 @@ bool Bmi::writeMemory(uint32_t addr, const void *buf, uint32_t len)
             IOLog("QCA9377-BMI: write_memory @0x%08x failed\n", addr);
             return false;
         }
-        addr  += tx;                            // advance by real length
+        addr  += tx;
         p     += tx;
-        len   -= tx;                            // roundup fixup, bmi.c:308
+        len   -= tx;
     }
     return true;
 }
 
-// ------------------------------------------------------------------
-// M3: 32-bit HI accessors (bmi.h:242-269)
-// ------------------------------------------------------------------
 bool Bmi::read32(uint32_t itemOffset, uint32_t *val)
 {
-    // QCA988X_HOST_INTEREST_ADDRESS (targaddrs.h:28) + struct offset.
+
     static const uint32_t kHostInterestAddress = 0x00400800;
     return readMemory(kHostInterestAddress + itemOffset, val, 4);
 }
@@ -145,9 +130,6 @@ bool Bmi::write32(uint32_t itemOffset, uint32_t val)
     return writeMemory(kHostInterestAddress + itemOffset, &val, 4);
 }
 
-// ------------------------------------------------------------------
-// M3: EXECUTE (bmi.c:316-347)
-// ------------------------------------------------------------------
 bool Bmi::execute(uint32_t addr, uint32_t param, uint32_t *result)
 {
     BmiCmdExecute cmd;
@@ -162,15 +144,11 @@ bool Bmi::execute(uint32_t addr, uint32_t param, uint32_t *result)
     return true;
 }
 
-// ------------------------------------------------------------------
-// M3: LZ fast download (bmi.c:432-495)
-// ------------------------------------------------------------------
 bool Bmi::fastDownload(uint32_t addr, const void *buf, uint32_t len)
 {
     if (!buf || len == 0)
         return false;
 
-    // 1. LZ_STREAM_START(addr) — send-only (bmi.c:444-450).
     BmiCmdLzStreamStart start;
     start.id   = kBmiLzStreamStart;
     start.addr = addr;
@@ -179,17 +157,13 @@ bool Bmi::fastDownload(uint32_t addr, const void *buf, uint32_t len)
         return false;
     }
 
-    // 2. LZ_DATA chunks (bmi.c:479-483): the ALIGNED head only
-    // (rounddown(length,4)); the ragged tail is sent separately as a
-    // zero-padded 4-byte word below — exactly as ath10k does, otherwise
-    // the last bytes would be transferred twice.
     struct {
         uint32_t id;
         uint32_t len;
         uint8_t  payload[kBmiMaxDataSize];
     } cmd;
     const uint32_t hdrLen = 8;
-    const uint32_t chunkCap = kBmiMaxDataSize - hdrLen;   // 248
+    const uint32_t chunkCap = kBmiMaxDataSize - hdrLen;
 
     const uint8_t *p = (const uint8_t *)buf;
     const uint32_t tail = len & 3;
@@ -208,11 +182,9 @@ bool Bmi::fastDownload(uint32_t addr, const void *buf, uint32_t len)
         remaining -= tx;
     }
 
-    // 3. Zero-padded trailer so the last word lands 4-aligned
-    // (bmi.c:474-483; only when length % 4 != 0).
     if (tail) {
         uint8_t trailer[4] = {0, 0, 0, 0};
-        bcopy(p, trailer, tail);   // p == buf + head now
+        bcopy(p, trailer, tail);
         cmd.id  = kBmiLzData;
         cmd.len = 4;
         bcopy(trailer, cmd.payload, 4);
@@ -222,8 +194,6 @@ bool Bmi::fastDownload(uint32_t addr, const void *buf, uint32_t len)
         }
     }
 
-    // 4. LZ_STREAM_START(0): close the stream, flush target caches
-    // (bmi.c:489-494).
     BmiCmdLzStreamStart flush;
     flush.id   = kBmiLzStreamStart;
     flush.addr = 0;
@@ -234,9 +204,6 @@ bool Bmi::fastDownload(uint32_t addr, const void *buf, uint32_t len)
     return true;
 }
 
-// ------------------------------------------------------------------
-// M3: BMI_DONE (bmi.c:103-127)
-// ------------------------------------------------------------------
 bool Bmi::done()
 {
     BmiCmdDone cmd;
@@ -250,4 +217,4 @@ bool Bmi::done()
     return true;
 }
 
-} // namespace qca
+}

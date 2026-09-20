@@ -18,21 +18,18 @@
 #ifndef QCA9377_CE_hpp
 #define QCA9377_CE_hpp
 
-#include <libkern/c++/OSObject.h>   // OSIncrementAtomic etc.
-#include <IOKit/IOLib.h>            // IOMalloc/IOFree, IODelay, OSSynchronizeIO
+#include <libkern/c++/OSObject.h>
+#include <IOKit/IOLib.h>
 #include <stdint.h>
 
-// ce_desc: ce.h:44-48 (32-bit format; this chip is not target_64bit).
 struct CEDescriptor {
-    volatile uint32_t addr;    // LE bus address
-    volatile uint16_t nbytes;  // LE
-    volatile uint16_t flags;   // LE
+    volatile uint32_t addr;
+    volatile uint16_t nbytes;
+    volatile uint16_t flags;
 } __attribute__((packed));
 
 static_assert(sizeof(CEDescriptor) == 8, "ce_desc must be 8 bytes");
 
-// Poll cadence + exchange timeout. BMI_COMMUNICATION_TIMEOUT_HZ is 1s in
-// ath10k; 10s is a conservative first-hardware bound.
 static const uint32_t kQCAPollStep_us       = 50;
 static const uint32_t kQCAExchangeTimeout_ms = 10000;
 
@@ -40,36 +37,23 @@ namespace qca {
 
 class CopyEngine {
 public:
-    // bar0: the driver's mapped BAR0 (LE 32-bit MMIO window). The driver
-    // holds the target awake for the whole M2 session (SOC_WAKE stays set),
-    // mirroring ath10k's wake-per-access without the per-access overhead.
-    static CopyEngine *create(volatile uint32_t *bar0);
-    void destroy();   // kernel-object teardown (IOFree etc.)
 
-    // Allocate the coherent DMA region, program CE0 src / CE1 dst
-    // registers, seed indices from the engine's current ones.
+    static CopyEngine *create(volatile uint32_t *bar0);
+    void destroy();
+
     bool init();
 
-    // Host->target: copy payload into the DMA buffer, post one src
-    // descriptor, doorbell, wait until SRRI consumes it
-    // (send completion = SRRI read, ce.c:155-158). Send-only: no rx post,
-    // no CE1 involvement (ath10k sends LZ_DATA/WRITE_MEMORY with
-    // resp==NULL — pci.c:2110-2112, 2176).
     bool send(const void *buf, uint32_t len);
 
     // Target->host exchange, ath10k ordering (pci.c:2155-2176):
-    //   postRecv()  — post the recv buffer + doorbell CE1 FIRST
-    //   send()      — then the command on CE0
-    //   recvWait()  — then poll DRRI + unpack the descriptor
+
     bool postRecv();
     bool recvWait(uint32_t timeoutMs);
 
-    // Convenience (M2 path): postRecv + recvWait. NOTE: only correct when
     // the response is not needed BEFORE the send — exchanges must use the
-    // three primitives in order.
+
     bool recvPolling(uint32_t timeoutMs);
 
-    // Buffers (valid after init; rx data valid after recvPolling()==true).
     uint8_t *txBuf() { return fTxCpu; }
     uint8_t *rxBuf() { return fRxCpu; }
     uint32_t rxNbytes() const { return fRxNbytes; }
@@ -88,38 +72,35 @@ private:
 
     volatile uint32_t *fBar0 = nullptr;
 
-    // One contiguous DMA region, 4KB-aligned sections:
-    // [src ring][dst ring][tx buf][rx buf]
     void    *fRegionCpu  = nullptr;
     uint64_t fRegionPhys = 0;
     uint32_t fRegionSize = 0;
 
     // Ring geometry (ce.h:289-290: nentries must be a power of 2).
     static const uint32_t kRingN    = 16;
-    static const uint32_t kRingMask = kRingN - 1; // CE_RING_IDX_* mask, ce.h:359-364
-    // Three-step DMA buffer sizes:
-    static const uint32_t kTxBufSz  = 256;        // src_sz_max CE0, pci.c:122-127
-    static const uint32_t kRxBufSz  = 2048;       // src_sz_max CE1, pci.c:129-134
-    // (BMI transfers are bounded by BMI_MAX_DATA_SIZE=256 + hdr; the large
-    // firmware path streams through BMI_LZ_DATA in <=256B command chunks,
+    static const uint32_t kRingMask = kRingN - 1;
+
+    static const uint32_t kTxBufSz  = 256;
+    static const uint32_t kRxBufSz  = 2048;
+
     // so the buffers never need to grow.)
     static const uint32_t kAlign    = 4096;
 
-    CEDescriptor *fSrcDesc = nullptr;  // CE0 src ring (host-owned RAM)
-    CEDescriptor *fDstDesc = nullptr;  // CE1 dst ring (host-owned RAM)
+    CEDescriptor *fSrcDesc = nullptr;
+    CEDescriptor *fDstDesc = nullptr;
     uint8_t *fTxCpu = nullptr;
     uint8_t *fRxCpu = nullptr;
     uint64_t fTxPhys = 0;
     uint64_t fRxPhys = 0;
 
-    uint32_t fSrcWrite = 0;  // CE0 host write index (doorbell value)
-    uint32_t fDstWrite = 0;  // CE1 host write index (recv-post doorbell)
-    uint32_t fSrcSw    = 0;  // CE0 host consumption index (SRRI shadow)
-    uint32_t fDstSw    = 0;  // CE1 host consumption index (DRRI shadow)
+    uint32_t fSrcWrite = 0;
+    uint32_t fDstWrite = 0;
+    uint32_t fSrcSw    = 0;
+    uint32_t fDstSw    = 0;
     uint32_t fRxNbytes = 0;
-    uint32_t fPostedIndex = 0;  // slot of the current in-flight recv buffer
+    uint32_t fPostedIndex = 0;
 };
 
-} // namespace qca
+}
 
-#endif /* QCA9377_CE_hpp */
+#endif

@@ -25,21 +25,17 @@
 
 namespace qca {
 
-// bmi.h:59-79 — command IDs.
 static const uint32_t kBmiNoCommand     = 0;
 static const uint32_t kBmiDone          = 1;
 static const uint32_t kBmiReadMemory    = 2;
 static const uint32_t kBmiWriteMemory   = 3;
 static const uint32_t kBmiExecute       = 4;
-static const uint32_t kBmiGetTargetInfo = 8;   // BMI_GET_TARGET_INFO
-static const uint32_t kBmiLzStreamStart = 13;  // followed by LZ_DATA
+static const uint32_t kBmiGetTargetInfo = 8;
+static const uint32_t kBmiLzStreamStart = 13;
 static const uint32_t kBmiLzData        = 14;
 
-// bmi.h:40 — per-command data cap (drives the LZ streaming chunk size).
 static const uint32_t kBmiMaxDataSize   = 256;
 
-// Wire format (bmi.h:99-129). Empty payload structs are intentional:
-// e.g. GET_TARGET_INFO carries the 4-byte id ONLY (bmi.h:128-129).
 struct BmiCmdGetTargetInfo { uint32_t id; } __attribute__((packed));
 struct BmiCmdDone          { uint32_t id; } __attribute__((packed));
 struct BmiCmdLzStreamStart { uint32_t id; uint32_t addr; } __attribute__((packed));
@@ -51,13 +47,11 @@ struct BmiCmdExecute {
 struct BmiCmdReadMemory {
     uint32_t id;
     uint32_t addr;
-    uint32_t len;      // requested response length (<= kBmiMaxDataSize)
+    uint32_t len;
 } __attribute__((packed));
-// WRITE_MEMORY / LZ_DATA have variable payloads; built in the cpp.
 
-// Responses (bmi.h:161-175): payload-only — no response id field.
 struct BmiRespGetTargetInfo {
-    uint32_t len;      // = 8
+    uint32_t len;
     uint32_t version;
     uint32_t type;
 } __attribute__((packed));
@@ -71,42 +65,24 @@ class Bmi {
 public:
     explicit Bmi(CopyEngine *ce) : fCe(ce) {}
 
-    // ---- M2 ----
-    // Send BMI_GET_TARGET_INFO over CE0, poll CE1 for the response.
-    // On success fills fTargetVersion/fTargetType and returns true.
     bool getTargetInfo();
 
     uint32_t targetVersion() const { return fTargetVersion; }
     uint32_t targetType()    const { return fTargetType; }
 
-    // Decode helper: Linux logs "target 0x05020001" for this card
-    // (hw ground truth). We log raw + a family decode.
     static void logTargetVersion(uint32_t version);
 
-    // ---- M3 ----
-    // BMI_READ_MEMORY: target RAM/registers -> host (bmi.c:155-196).
     bool readMemory(uint32_t addr, void *out, uint32_t len);
 
-    // BMI_WRITE_MEMORY: host -> target RAM (bmi.c:260-313). Chunks at
-    // 4-byte alignment, mirroring the roundup() in ath10k.
     bool writeMemory(uint32_t addr, const void *buf, uint32_t len);
 
-    // ath10k_bmi_read32/write32 (bmi.h:242-269): HI-item accessor =
-    // 32-bit memory op at HOST_INTEREST_ADDRESS + item offset.
     bool read32(uint32_t itemOffset, uint32_t *val);
     bool write32(uint32_t itemOffset, uint32_t val);
 
-    // BMI_EXECUTE: run code at addr, block for the u32 result
-    // (bmi.c:316-347). Used for the OTP board-id query.
     bool execute(uint32_t addr, uint32_t param, uint32_t *result);
 
-    // LZ fast-download (bmi.c:432-495): LZ_STREAM_START(addr),
-    // LZ_DATA chunks (zero-padded trailer to 4B), LZ_STREAM_START(0)
-    // to flush target caches.
     bool fastDownload(uint32_t addr, const void *buf, uint32_t len);
 
-    // BMI_DONE (bmi.c:103-127): tells the ROM BMI is finished. After this
-    // no further BMI commands are legal.
     bool done();
 
 private:
@@ -115,11 +91,10 @@ private:
     uint32_t    fTargetType    = 0;
     bool        fDoneSent      = false;
 
-    // 12-byte buffer for the three read-style responses.
     bool exchangeWait(const void *cmd, uint32_t cmdLen,
                       void *resp, uint32_t respLen, uint32_t *gotLen);
 };
 
-} // namespace qca
+}
 
-#endif /* QCA9377_BMI_hpp */
+#endif

@@ -29,7 +29,6 @@
 
 namespace qca {
 
-// CE ring/doorbell register offsets (qcax_ce_regs, hw.c:462-476).
 static const uint32_t kCESRBaseLo    = 0x00;
 static const uint32_t kCESRSize      = 0x04;
 static const uint32_t kCEDRBaseLo    = 0x08;
@@ -39,7 +38,6 @@ static const uint32_t kCEDSTWrIndex  = 0x40;
 static const uint32_t kCECurrentSRRI = 0x44;
 static const uint32_t kCECurrentDRRI = 0x48;
 
-// CE0/CE1 bases (qca6174_regs, hw.c:52-53).
 static const uint32_t kCE0Base = 0x00034400;
 static const uint32_t kCE1Base = 0x00034800;
 
@@ -69,7 +67,6 @@ bool CopyEngine::allocRegion()
     const uint32_t rxAligned   = (kRxBufSz + kAlign - 1) & ~(kAlign - 1);
     fRegionSize = 2 * ringAligned + txAligned + rxAligned;
 
-    // Physically contiguous, DMA-safe, zeroed (IOMallocContiguous zeroes).
     fRegionCpu = IOMallocContiguous(fRegionSize, kAlign, &fRegionPhys);
     if (!fRegionCpu || !fRegionPhys) {
         IOLog("QCA9377-CE: IOMallocContiguous(%u) failed\n", fRegionSize);
@@ -111,14 +108,11 @@ bool CopyEngine::init()
     const uint64_t srcBus = fRegionPhys;
     const uint64_t dstBus = fRegionPhys + ringAligned;
 
-    // Seed indices from the engine's current ones (ath10k reads hw
-    // indices before programming — ce.c:1375-1381).
     fSrcSw    = read32(kCE0Base + kCECurrentSRRI) & kRingMask;
     fSrcWrite = read32(kCE0Base + kCESRWrIndex)   & kRingMask;
     fDstSw    = read32(kCE1Base + kCECurrentDRRI) & kRingMask;
     fDstWrite = read32(kCE1Base + kCEDSTWrIndex)  & kRingMask;
 
-    // Program CE0 src ring (ce.c:1383-1389); CE1 dst ring (dr_base/size).
     write32(kCE0Base + kCESRBaseLo, (uint32_t)srcBus);
     write32(kCE0Base + kCESRSize,   kRingN);
     write32(kCE1Base + kCEDRBaseLo, (uint32_t)dstBus);
@@ -138,8 +132,6 @@ bool CopyEngine::send(const void *buf, uint32_t len)
         return false;
     }
 
-    // One in flight: wait until the engine consumed everything we wrote
-    // (SRRI == our write index).
     const uint32_t deadline = kQCAExchangeTimeout_ms * 1000 / kQCAPollStep_us;
     uint32_t srri = read32(kCE0Base + kCECurrentSRRI) & kRingMask;
     for (uint32_t i = 0; i < deadline && srri != fSrcWrite; i++) {
@@ -152,12 +144,9 @@ bool CopyEngine::send(const void *buf, uint32_t len)
         return false;
     }
 
-    // Copy payload into the DMA buffer + fence.
     bcopy(buf, fTxCpu, len);
     OSSynchronizeIO();
 
-    // Fill descriptor at our write index (ce.c:459-463: addr/nbytes/flags;
-    // META_DATA(transfer_id)=0, GATHER=0, BYTE_SWAP=0).
     CEDescriptor d;
     d.addr   = (uint32_t)fTxPhys;
     d.nbytes = (uint16_t)len;
@@ -165,13 +154,10 @@ bool CopyEngine::send(const void *buf, uint32_t len)
     fSrcDesc[fSrcWrite] = d;
     OSSynchronizeIO();
 
-    // Doorbell: publish the new write index (ce.c:473 — always written
-    // for non-gather sends).
     fSrcWrite = (fSrcWrite + 1) & kRingMask;
     write32(kCE0Base + kCESRWrIndex, fSrcWrite);
     OSSynchronizeIO();
 
-    // Send completion: SRRI advances to our new write index.
     srri = read32(kCE0Base + kCECurrentSRRI) & kRingMask;
     for (uint32_t i = 0; i < deadline && srri != fSrcWrite; i++) {
         IODelay(kQCAPollStep_us);
@@ -185,10 +171,8 @@ bool CopyEngine::send(const void *buf, uint32_t len)
     return true;
 }
 
-// Post one recv buffer at our dst write index + doorbell (ce.c:671-677).
 // MUST be called before the corresponding send() — ath10k posts rx first
-// so the target can respond the moment it processes the command
-// (pci.c:2155-2162).
+
 bool CopyEngine::postRecv()
 {
     CEDescriptor d;
@@ -200,13 +184,11 @@ bool CopyEngine::postRecv()
 
     fPostedIndex = fDstWrite;
     fDstWrite = (fDstWrite + 1) & kRingMask;
-    write32(kCE1Base + kCEDSTWrIndex, fDstWrite);   // doorbell (ce.c:676)
+    write32(kCE1Base + kCEDSTWrIndex, fDstWrite);
     OSSynchronizeIO();
     return true;
 }
 
-// Poll DRRI (ce.c:266-267) until it moves past the posted slot, then
-// unpack the descriptor (nbytes; ce.c:768-775 — nbytes==0 means not-done
 // race).
 bool CopyEngine::recvWait(uint32_t timeoutMs)
 {
@@ -222,7 +204,6 @@ bool CopyEngine::recvWait(uint32_t timeoutMs)
         return false;
     }
 
-    // Completion at fDstSw (== posted): re-read the descriptor from RAM.
     CEDescriptor d = fDstDesc[posted];
     if (d.nbytes == 0) {
         IOLog("QCA9377-CE: DRRI moved but nbytes==0 (race; ce.c:771-776)\n");
@@ -240,4 +221,4 @@ bool CopyEngine::recvPolling(uint32_t timeoutMs)
     return recvWait(timeoutMs);
 }
 
-} // namespace qca
+}
