@@ -21,7 +21,7 @@
  */
 
 #include "CE.hpp"
-#include <libkern/c++/IOBufferMemoryDescriptor.h>
+#include <IOKit/IOMemoryDescriptor.h>
 
 namespace qca {
 
