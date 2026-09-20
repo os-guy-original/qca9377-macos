@@ -20,6 +20,7 @@ targets:
       - path: skeleton/QCA9377Driver.cpp
       - path: skeleton/CE.cpp
       - path: skeleton/BMI.cpp
+      - path: skeleton/FW.cpp
     settings:
       base:
         PRODUCT_NAME: QCA9377

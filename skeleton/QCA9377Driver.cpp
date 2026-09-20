@@ -59,6 +59,8 @@ bool com_bswork_QCA9377::start(IOService *provider)
           fPci->configRead16(0x2C),          // subsystem vendor
           fPci->configRead16(0x2E));         // subsystem device
     fPciRev = fPci->configRead8(0x08);     // saved for logRevisionInfo
+    fSubVendor = fPci->configRead16(0x2C); // board-2.bin selection keys
+    fSubDevice = fPci->configRead16(0x2E);
 
     // BAR0: 64-bit, non-prefetchable MMIO at config offset 0x10.
     // Ground truth (docs/hardware-ground-truth.txt): 0x51000000, 2 MiB.
@@ -99,9 +101,19 @@ bool com_bswork_QCA9377::start(IOService *provider)
         // the kext stays passive and loaded.
     }
 
+    // M3: firmware boot (no interrupts yet; poll-only). Only attempted
+    // when the BMI probe succeeded - every step is logged and gated.
+    bool m3ok = false;
+    if (fBmi && fBmi->targetVersion() != 0) {
+        m3ok = bootFirmware();
+    } else {
+        IOLog("QCA9377: M3 skipped - BMI probe did not succeed\n");
+    }
+
     // One-line machine-friendly verdict for the sos capture to highlight.
-    IOLog("QCA9377: SUMMARY ok=1 version=0.3.0 pciRev=0x%02x bmiTarget=0x%08x\n",
-          fPciRev, fBmi ? fBmi->targetVersion() : 0);
+    IOLog("QCA9377: SUMMARY ok=1 version=0.4.0 pciRev=0x%02x bmiTarget=0x%08x m3=%s\n",
+          fPciRev, fBmi ? fBmi->targetVersion() : 0,
+          m3ok ? "BOOTED" : "no");
 
     IOLog("QCA9377: probe complete - staying passive (no MSI, no interrupts, no fw load)\n");
     registerService();
@@ -272,6 +284,76 @@ bool com_bswork_QCA9377::probeBmi(void)
 }
 
 // ---------------------------------------------------------------------------
+// M3: firmware boot through BMI. Order mirrors ath10k_core_start
+// (core.c:2977-3060): configure_target -> download_cal_data (board+OTP
+// here; no pre-cal file exists on this machine) -> download_fw ->
+// bmi_done -> wait target init. All poll-only; every step gated+logged.
+// The firmware is embedded (FwData.h) — no filesystem dependency.
+// ---------------------------------------------------------------------------
+
+bool com_bswork_QCA9377::bootFirmware(void)
+{
+    // 1. Parse the embedded API-6 container.
+    qca::FwImage img;
+    if (!qca::Fw::parseFirmware(&img)) {
+        IOLog("QCA9377: M3 fw parse failed\n");
+        return false;
+    }
+
+    // 2. Select this machine's board data (subsystem IDs from PCI cfg).
+    const uint8_t *boardData = nullptr;
+    uint32_t boardLen = 0;
+    bool haveBoard = qca::Fw::selectBoard(qca9377_board2_bin, qca9377_board2_len,
+                                          fSubVendor, fSubDevice,
+                                          &boardData, &boardLen);
+    if (!haveBoard) {
+        // Legacy fallback: board.bin (single blob, no container).
+        boardData = qca9377_board_bin;
+        boardLen  = qca9377_board_len;
+        IOLog("QCA9377: M3 falling back to board.bin (%uB)\n", boardLen);
+    }
+
+    // 3. Target HI configuration (core.c:867-930).
+    if (!qca::Fw::configureTarget(fBmi)) {
+        IOLog("QCA9377: M3 configureTarget failed\n");
+        return false;
+    }
+
+    // 4. Board data -> target RAM (core.c:1742-1790).
+    if (!qca::Fw::downloadBoardData(fBmi, boardData, boardLen)) {
+        IOLog("QCA9377: M3 board data failed\n");
+        return false;
+    }
+
+    // 5. OTP: run for the board id. Non-fatal if the id comes back 0
+    //    (ath10k: "board id does not exist in otp, ignore it").
+    uint32_t boardId = 0, chipId = 0;
+    if (img.otp && img.otpLen) {
+        if (!qca::Fw::runOtp(fBmi, img.otp, img.otpLen, &boardId, &chipId)) {
+            IOLog("QCA9377: M3 OTP failed (continuing, cal may be wrong)\n");
+        }
+    } else {
+        IOLog("QCA9377: M3 no OTP image in fw6 (cal may be wrong)\n");
+    }
+
+    // 6. Firmware image -> 0x1234 (core.c:1184-1234).
+    if (!qca::Fw::downloadFirmware(fBmi, img.firmware, img.firmwareLen)) {
+        IOLog("QCA9377: M3 firmware download failed\n");
+        return false;
+    }
+
+    // 7. BMI_DONE + FW_IND_INITIALIZED wait (bmi.c:103-127, pci.c:3284+).
+    if (!qca::Fw::doneAndWaitTargetInit(fBmi, fCe, fBar0)) {
+        IOLog("QCA9377: M3 target init wait failed\n");
+        return false;
+    }
+
+    IOLog("QCA9377: M3 firmware booted (board=%u chip=%u)\n",
+          boardId, chipId);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // kmod linkage - the classic command-line kext recipe. libkmod does NOT
 // define kmod_info; every kext must define it (XNU osfmk/mach/kmod.h).
 // OpenCore's prelinker locates this symbol to wire _PrelinkKmodInfo; a
@@ -305,7 +387,7 @@ kmod_info_t kmod_info = {
     KMOD_INFO_VERSION,     // struct format version
     0,                     // id (assigned by the kernel)
     "com.bswork.QCA9377",  // matches Info.plist CFBundleIdentifier
-    "0.3.0",               // matches CFBundleShortVersionString
+    "0.4.0",               // matches CFBundleShortVersionString
     -1,                    // reference count (kernel-managed)
     0, 0, 0, 0,            // referenceList, address, size, hdrSize
     qca9377_kmod_start,

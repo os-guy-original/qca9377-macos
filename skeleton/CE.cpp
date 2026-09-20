@@ -185,12 +185,12 @@ bool CopyEngine::send(const void *buf, uint32_t len)
     return true;
 }
 
-bool CopyEngine::recvPolling(uint32_t timeoutMs)
+// Post one recv buffer at our dst write index + doorbell (ce.c:671-677).
+// MUST be called before the corresponding send() — ath10k posts rx first
+// so the target can respond the moment it processes the command
+// (pci.c:2155-2162).
+bool CopyEngine::postRecv()
 {
-    // Post one recv buffer at our dst write index (ce.c:671-677), then
-    // poll DRRI (ce.c:266-267: current_drri_addr) until it moves past the
-    // posted slot, then unpack the descriptor (nbytes; ce.c:768-775 —
-    // nbytes==0 means not-done race).
     CEDescriptor d;
     d.addr   = (uint32_t)fRxPhys;
     d.nbytes = 0;
@@ -198,11 +198,19 @@ bool CopyEngine::recvPolling(uint32_t timeoutMs)
     fDstDesc[fDstWrite] = d;
     OSSynchronizeIO();
 
-    const uint32_t posted = fDstWrite;
+    fPostedIndex = fDstWrite;
     fDstWrite = (fDstWrite + 1) & kRingMask;
     write32(kCE1Base + kCEDSTWrIndex, fDstWrite);   // doorbell (ce.c:676)
     OSSynchronizeIO();
+    return true;
+}
 
+// Poll DRRI (ce.c:266-267) until it moves past the posted slot, then
+// unpack the descriptor (nbytes; ce.c:768-775 — nbytes==0 means not-done
+// race).
+bool CopyEngine::recvWait(uint32_t timeoutMs)
+{
+    const uint32_t posted = fPostedIndex;
     const uint32_t deadline = timeoutMs * 1000 / kQCAPollStep_us;
     uint32_t drri = read32(kCE1Base + kCECurrentDRRI) & kRingMask;
     for (uint32_t i = 0; i < deadline && drri == fDstSw; i++) {
@@ -215,7 +223,7 @@ bool CopyEngine::recvPolling(uint32_t timeoutMs)
     }
 
     // Completion at fDstSw (== posted): re-read the descriptor from RAM.
-    d = fDstDesc[posted];
+    CEDescriptor d = fDstDesc[posted];
     if (d.nbytes == 0) {
         IOLog("QCA9377-CE: DRRI moved but nbytes==0 (race; ce.c:771-776)\n");
         return false;
@@ -224,6 +232,12 @@ bool CopyEngine::recvPolling(uint32_t timeoutMs)
     fDstSw = (fDstSw + 1) & kRingMask;
     OSSynchronizeIO();
     return true;
+}
+
+bool CopyEngine::recvPolling(uint32_t timeoutMs)
+{
+    if (!postRecv()) return false;
+    return recvWait(timeoutMs);
 }
 
 } // namespace qca

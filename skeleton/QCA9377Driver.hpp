@@ -25,6 +25,7 @@
 #include <IOKit/IOService.h>
 #include "CE.hpp"
 #include "BMI.hpp"
+#include "FW.hpp"
 
 // ---------------------------------------------------------------------------
 // Register map - every constant below is verified against the pinned ath10k
@@ -118,6 +119,8 @@ private:
     volatile uint32_t *fBar0  = nullptr;   // mapped BAR0
     IOByteCount     fBar0Len = 0;
     uint8_t         fPciRev  = 0;          // PCI config-space revision ID
+    uint16_t        fSubVendor  = 0;       // PCI config 0x2C (board select)
+    uint16_t        fSubDevice  = 0;       // PCI config 0x2E (board select)
 
     // M2: CE ring manager + BMI protocol (owned, plain C++ objects).
     qca::CopyEngine *fCe = nullptr;
@@ -139,6 +142,10 @@ private:
 
     // -- M2: Copy Engine rings + BMI handshake --
     bool probeBmi(void);         // CE init + GET_TARGET_INFO exchange
+
+    // -- M3: firmware boot through BMI --
+    bool bootFirmware(void);     // parse fw6, board select, configure,
+                                 // board data, OTP, firmware, BMI_DONE+wait
 
     uint32_t ceBase(uint32_t ceId); // CE0_BASE + stride*id (ce.h:341)
 };
