@@ -18,8 +18,11 @@
  * Polling driver, one command in flight. 16-entry rings (ring sizes are
  * host-written; ath10k uses 512/2048). Plain C++ class (libkmodc++).
  *
- * TRAP: descriptors are 32-bit bus addresses — a >4G DMA allocation is a
- * hard error here (init() enforces).
+ * DMA: the whole per-pair region (rings + tx + rx) is one contiguous
+ * allocation with a 32-bit physical mask, via
+ * IOBufferMemoryDescriptor::inTaskWithPhysicalMask. IOMallocContiguous is
+ * NOT exported by the Sequoia Recovery kernelcache — kexts linking against
+ * it fail OC prelink injection with EFI_INVALID_PARAMETER.
  */
 
 #ifndef QCA9377_CE_hpp
@@ -27,7 +30,10 @@
 
 #include <libkern/c++/OSObject.h>
 #include <IOKit/IOLib.h>
+#include <IOKit/IOMemoryDescriptor.h>
 #include <stdint.h>
+
+class IODMACommand;
 
 struct CEDescriptor {
     volatile uint32_t addr;
@@ -73,6 +79,11 @@ private:
     void    *fRegionCpu  = nullptr;
     uint64_t fRegionPhys = 0;
     uint32_t fRegionSize = 0;
+
+    IOBufferMemoryDescriptor *fBmd = nullptr;
+    IODMACommand             *fDma = nullptr;
+    bool fBmdPrepared  = false;
+    bool fDmaPrepared  = false;
 
     static const uint32_t kRingN    = 16;
     static const uint32_t kRingMask = kRingN - 1;

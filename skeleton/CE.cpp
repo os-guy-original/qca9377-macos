@@ -15,13 +15,17 @@
  *
  * Descriptor DMA: engine DMAs descriptors to/from system RAM; host writes
  * descriptors with OSSynchronizeIO() fences and re-reads them on completion.
- * TRAP: descriptors are 32-bit bus addresses — init() fails loudly if the
- * DMA allocation lands above 4G (known limitation: IOMallocContiguous takes
- * no mask; revisit with IOBufferMemoryDescriptor if this ever fires).
+ * DMA allocation: IOBufferMemoryDescriptor::inTaskWithPhysicalMask with a
+ * 32-bit physical mask (the Recovery kernelcache lacks IOMallocContiguous;
+ * IODMACommand keeps this allocation mappable without getPhysicalSegment64,
+ * which modern kernels removed).
  */
 
 #include "CE.hpp"
 #include <IOKit/IOLib.h>
+#include <IOKit/IOMemoryDescriptor.h>
+#include <IOKit/IODMACommand.h>
+#include <libkern/c++/OSObject.h>
 
 namespace qca {
 
@@ -49,46 +53,99 @@ bool CECopyPair::allocRegion()
     const uint32_t rxAligned    = (kRxBufSz + kAlign - 1) & ~(kAlign - 1);
     fRegionSize = 2 * ringAligned + txAligned + rxAligned;
 
-    fRegionCpu = IOMallocContiguous(fRegionSize, kAlign, &fRegionPhys);
-    if (!fRegionCpu || !fRegionPhys) {
-        IOLog("QCA9377-CE%u/%u: IOMallocContiguous(%u) failed\n",
+    // 32-bit-masked contiguous DMA (Recovery-KC-compatible pattern, after
+    // itlwm hal_iwm io.cpp): BMD with mask, prepare, IODMACommand over it,
+    // then gen64IOVMSegments yields the bus address.
+    fBmd = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(
+        kernel_task,
+        kIODirectionInOut | kIOMemoryPhysicallyContiguous | kIOMapInhibitCache,
+        fRegionSize,
+        0x00000000FFFFFFFFULL);
+    if (!fBmd) {
+        IOLog("QCA9377-CE%u/%u: inTaskWithPhysicalMask(%u) failed\n",
               fSrcCe, fDstCe, fRegionSize);
-        fRegionCpu = nullptr;
-        return false;
+        goto fail;
+    }
+    if (fBmd->prepare() != kIOReturnSuccess) {
+        IOLog("QCA9377-CE%u/%u: BMD prepare failed\n", fSrcCe, fDstCe);
+        goto fail;
+    }
+    fBmdPrepared = true;
+    fRegionCpu = fBmd->getBytesNoCopy();
+    if (!fRegionCpu) {
+        IOLog("QCA9377-CE%u/%u: buffer has no kernel mapping\n", fSrcCe, fDstCe);
+        goto fail;
+    }
+    memset(fRegionCpu, 0, fRegionSize);
+
+    fDma = IODMACommand::withSpecification(
+        kIODMACommandOutputHost64,
+        32,               // numAddressBits: hardware sees 32-bit bus
+        0,                // maxSegmentSize: unlimited
+        IODMACommand::kMapped,
+        0,                // maxTransferSize
+        1,                // alignment
+        nullptr, nullptr);
+    if (!fDma) {
+        IOLog("QCA9377-CE%u/%u: IODMACommand::withSpecification failed\n",
+              fSrcCe, fDstCe);
+        goto fail;
+    }
+    if (fDma->setMemoryDescriptor(fBmd, true) != kIOReturnSuccess) {
+        IOLog("QCA9377-CE%u/%u: setMemoryDescriptor failed\n", fSrcCe, fDstCe);
+        goto fail;
+    }
+    fDmaPrepared = true;
+
+    {
+        IODMACommand::Segment64 seg;
+        uint64_t ofs = 0;
+        uint32_t nseg = 1;
+        if (fDma->gen64IOVMSegments(&ofs, &seg, &nseg) != kIOReturnSuccess
+            || nseg == 0
+            || seg.fLength < fRegionSize) {
+            IOLog("QCA9377-CE%u/%u: no contiguous segment within 32 bits\n",
+                  fSrcCe, fDstCe);
+            goto fail;
+        }
+        fRegionPhys = seg.fIOVMAddr;
     }
 
-    // TRAP: CE descriptors carry 32-bit bus addresses. IOMallocContiguous
-    // does not take a mask, so a >4G page here would corrupt silently —
-    // fail loudly instead (IOKit often returns <4G on hackintoshes).
-    if (fRegionPhys & ~0xFFFFFFFFULL) {
-        IOLog("QCA9377-CE%u/%u: phys 0x%llx exceeds 32-bit mask\n",
-              fSrcCe, fDstCe, fRegionPhys);
-        IOFreeContiguous(fRegionCpu, fRegionSize);
-        fRegionCpu = nullptr;
-        fRegionPhys = 0;
-        return false;
+    {
+        uint8_t *cpu = (uint8_t *)fRegionCpu;
+        fSrcDesc = (CEDescriptor *)cpu;
+        fDstDesc = (CEDescriptor *)(cpu + ringAligned);
+        fTxCpu   = cpu + 2 * ringAligned;
+        fRxCpu   = fTxCpu + txAligned;
+        fTxPhys  = fRegionPhys + 2 * ringAligned;
+        fRxPhys  = fTxPhys + txAligned;
     }
-
-    uint8_t *cpu = (uint8_t *)fRegionCpu;
-    fSrcDesc = (CEDescriptor *)cpu;
-    fDstDesc = (CEDescriptor *)(cpu + ringAligned);
-    fTxCpu   = cpu + 2 * ringAligned;
-    fRxCpu   = fTxCpu + txAligned;
-    fTxPhys  = fRegionPhys + 2 * ringAligned;
-    fRxPhys  = fTxPhys + txAligned;
 
     IOLog("QCA9377-CE%u/%u: region phys=0x%llx size=%u\n",
           fSrcCe, fDstCe, fRegionPhys, fRegionSize);
     return true;
+
+fail:
+    freeRegion();
+    return false;
 }
 
 void CECopyPair::freeRegion()
 {
-    if (fRegionCpu) {
-        IOFreeContiguous(fRegionCpu, fRegionSize);
-        fRegionCpu = nullptr;
-        fRegionPhys = 0;
+    if (fDma) {
+        if (fDmaPrepared) fDma->clearMemoryDescriptor(true);
+        fDma->release();
+        fDma = nullptr;
     }
+    if (fBmd) {
+        if (fBmdPrepared) fBmd->complete();
+        fBmd->release();
+        fBmd = nullptr;
+    }
+    fBmdPrepared = false;
+    fDmaPrepared = false;
+    fRegionCpu = nullptr;
+    fRegionPhys = 0;
 }
 
 bool CECopyPair::init()
