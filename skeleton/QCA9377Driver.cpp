@@ -15,6 +15,7 @@
  */
 
 #include "QCA9377Driver.hpp"
+#include "FwData.h"                // embedded fw6/board2/board arrays
 #include <libkern/OSDebug.h>
 #include <libkern/OSKextLib.h>
 #include <IOKit/IOLib.h>
