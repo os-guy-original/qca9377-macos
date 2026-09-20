@@ -33,6 +33,7 @@
 #include <IOKit/IOMemoryDescriptor.h>
 #include <stdint.h>
 
+class IOBufferMemoryDescriptor;
 class IODMACommand;
 
 struct CEDescriptor {
