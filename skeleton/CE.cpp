@@ -15,13 +15,13 @@
  *
  * Descriptor DMA: engine DMAs descriptors to/from system RAM; host writes
  * descriptors with OSSynchronizeIO() fences and re-reads them on completion.
- * TRAP: descriptors are 32-bit bus addresses — all DMA memory must be
- * allocated with a 32-bit physical mask (IOBufferMemoryDescriptor with
- * kIOMemoryPhysicallyContiguous + physMask), or init() fails here.
+ * TRAP: descriptors are 32-bit bus addresses — init() fails loudly if the
+ * DMA allocation lands above 4G (known limitation: IOMallocContiguous takes
+ * no mask; revisit with IOBufferMemoryDescriptor if this ever fires).
  */
 
 #include "CE.hpp"
-#include <IOKit/IOMemoryDescriptor.h>
+#include <IOKit/IOLib.h>
 
 namespace qca {
 
@@ -49,37 +49,25 @@ bool CECopyPair::allocRegion()
     const uint32_t rxAligned    = (kRxBufSz + kAlign - 1) & ~(kAlign - 1);
     fRegionSize = 2 * ringAligned + txAligned + rxAligned;
 
-    // TRAP: CE descriptors carry 32-bit bus addresses. Constrain the
-    // allocation to <4G via the physical mask (10.4 fw consumes what the
-    // engine DMAs; any 64-bit address here corrupts silently).
-    IOBufferMemoryDescriptor *md =
-        IOBufferMemoryDescriptor::inTaskWithPhysicalMask(
-            kernel_task, kIOMemoryPhysicallyContiguous | kIODirectionInOut,
-            fRegionSize, 0xFFFFFFFFULL);
-    if (!md) {
-        IOLog("QCA9377-CE%u/%u: buffer alloc failed\n", fSrcCe, fDstCe);
-        return false;
-    }
-    if (md->prepare(kIODirectionInOut) != kIOReturnSuccess) {
-        IOLog("QCA9377-CE%u/%u: prepare failed\n", fSrcCe, fDstCe);
-        md->release();
-        return false;
-    }
-
-    fRegionCpu  = (void *)md->getBytesNoCopy();
-    IOByteCount segLen = 0;
-    uint64_t phys = md->getPhysicalSegment64(0, &segLen);
-    if (!phys || (phys & ~0xFFFFFFFFULL)) {
-        IOLog("QCA9377-CE%u/%u: phys 0x%llx exceeds 32-bit mask\n",
-              fSrcCe, fDstCe, phys);
-        md->complete();
-        md->release();
+    fRegionCpu = IOMallocContiguous(fRegionSize, kAlign, &fRegionPhys);
+    if (!fRegionCpu || !fRegionPhys) {
+        IOLog("QCA9377-CE%u/%u: IOMallocContiguous(%u) failed\n",
+              fSrcCe, fDstCe, fRegionSize);
         fRegionCpu = nullptr;
         return false;
     }
-    fRegionPhys = phys;
-    fMd = md;                       // keep for complete()/release()
-    fMdPrepared = true;
+
+    // TRAP: CE descriptors carry 32-bit bus addresses. IOMallocContiguous
+    // does not take a mask, so a >4G page here would corrupt silently —
+    // fail loudly instead (IOKit often returns <4G on hackintoshes).
+    if (fRegionPhys & ~0xFFFFFFFFULL) {
+        IOLog("QCA9377-CE%u/%u: phys 0x%llx exceeds 32-bit mask\n",
+              fSrcCe, fDstCe, fRegionPhys);
+        IOFreeContiguous(fRegionCpu, fRegionSize);
+        fRegionCpu = nullptr;
+        fRegionPhys = 0;
+        return false;
+    }
 
     uint8_t *cpu = (uint8_t *)fRegionCpu;
     fSrcDesc = (CEDescriptor *)cpu;
@@ -96,13 +84,11 @@ bool CECopyPair::allocRegion()
 
 void CECopyPair::freeRegion()
 {
-    if (fMd) {
-        if (fMdPrepared) { fMd->complete(); fMdPrepared = false; }
-        fMd->release();
-        fMd = nullptr;
+    if (fRegionCpu) {
+        IOFreeContiguous(fRegionCpu, fRegionSize);
+        fRegionCpu = nullptr;
+        fRegionPhys = 0;
     }
-    fRegionCpu = nullptr;
-    fRegionPhys = 0;
 }
 
 bool CECopyPair::init()

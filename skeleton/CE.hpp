@@ -81,9 +81,6 @@ private:
     static const uint32_t kRxBufSz = 2048;
     static const uint32_t kAlign   = 4096;
 
-    class IOBufferMemoryDescriptor *fMd = nullptr;
-    bool fMdPrepared = false;
-
     CEDescriptor *fSrcDesc = nullptr;
     CEDescriptor *fDstDesc = nullptr;
     uint8_t *fTxCpu = nullptr;
