@@ -60,6 +60,9 @@ public:
     // Post rx BEFORE the matching send — ath10k ordering (pci.c:2155-2176);
     // posting after races the target's response.
     bool postRecv();
+    // Wait for the oldest unconsumed dst entry (FIFO, at fDstSw). A
+    // nbytes==0 race (descriptor DMA not landed yet) keeps polling instead
+    // of failing, exactly like ath10k's completed_recv_next (ce.c:756-786).
     bool recvWait(uint32_t timeoutMs);
 
     uint8_t *txBuf() { return fTxCpu; }
@@ -105,7 +108,6 @@ private:
     uint32_t fSrcSw      = 0;
     uint32_t fDstSw      = 0;
     uint32_t fRxNbytes   = 0;
-    uint32_t fPostedIndex = 0;
 };
 
 class CEManager {

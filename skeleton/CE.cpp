@@ -247,7 +247,6 @@ bool CECopyPair::postRecv()
     fDstDesc[fDstWrite] = d;
     OSSynchronizeIO();
 
-    fPostedIndex = fDstWrite;
     fDstWrite = (fDstWrite + 1) & kRingMask;
     write32(ceBase(fDstCe) + kCEDSTWrIndex, fDstWrite);
     OSSynchronizeIO();
@@ -256,29 +255,35 @@ bool CECopyPair::postRecv()
 
 bool CECopyPair::recvWait(uint32_t timeoutMs)
 {
-    const uint32_t posted = fPostedIndex;
     const uint32_t deadline = timeoutMs * 1000 / kQCAPollStep_us;
-    uint32_t drri = read32(ceBase(fDstCe) + kCECurrentDRRI) & kRingMask;
-    for (uint32_t i = 0; i < deadline && drri == fDstSw; i++) {
+
+    // Poll the oldest unconsumed entry (FIFO at fDstSw), not a snapshot of
+    // the write index: DRRI can run ahead of the descriptor landing, and
+    // later posts must not skip the queue. One rx buffer is live per pair,
+    // so the entry at fDstSw is the one this wait consumes.
+    for (uint32_t i = 0; i < deadline; i++) {
+        const uint32_t drri = read32(ceBase(fDstCe) + kCECurrentDRRI) & kRingMask;
+        if (drri != fDstSw) {
+            CEDescriptor d = fDstDesc[fDstSw];
+            if (d.nbytes == 0) {
+                // Race guard (ce.c:771-781): DRRI moved before the
+                // descriptor DMA landed. Keep polling — do NOT consume,
+                // do NOT fail (a stale-fail here permanently desyncs
+                // every later exchange).
+                IODelay(kQCAPollStep_us);
+                continue;
+            }
+            fRxNbytes = d.nbytes;
+            fDstSw = (fDstSw + 1) & kRingMask;
+            OSSynchronizeIO();
+            return true;
+        }
         IODelay(kQCAPollStep_us);
-        drri = read32(ceBase(fDstCe) + kCECurrentDRRI) & kRingMask;
-    }
-    if (drri == fDstSw) {
-        IOLog("QCA9377-CE%u: recv timeout (DRRI=%u sw=%u)\n", fDstCe, drri, fDstSw);
-        return false;
     }
 
-    CEDescriptor d = fDstDesc[posted];
-    if (d.nbytes == 0) {
-        // Race guard (ce.c:771-776): DRRI moved before the descriptor DMA
-        // landed. Treat as not-done.
-        IOLog("QCA9377-CE%u: DRRI moved but nbytes==0 (race)\n", fDstCe);
-        return false;
-    }
-    fRxNbytes = d.nbytes;
-    fDstSw = (fDstSw + 1) & kRingMask;
-    OSSynchronizeIO();
-    return true;
+    IOLog("QCA9377-CE%u: recv timeout (DRRI=%u sw=%u)\n",
+          fDstCe, read32(ceBase(fDstCe) + kCECurrentDRRI) & kRingMask, fDstSw);
+    return false;
 }
 
 // ---------------------------------------------------------------------------

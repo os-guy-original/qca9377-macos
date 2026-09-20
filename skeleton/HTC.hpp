@@ -36,16 +36,19 @@ enum : uint16_t {
     kHtcMsgSetupCompleteEx = 5,
 };
 
-// Service ids: SVC(group, idx) = group<<8 | idx (ATH10K_HTC_SVC_GRP_WMI=4).
+// Service ids: SVC(group, idx) = group<<8 | idx.
+// ATH10K_HTC_SVC_GRP_WMI = 1 (htc.h:261) — NOT 4; group 4 is undefined and
+// the target rejects the connect (moot before v0.5.2).
 enum : uint16_t {
     kHtcSvcRsvdCtrl   = 0x0001,
-    kHtcSvcWmiControl = (4 << 8) | 0,
+    kHtcSvcWmiControl = 0x0100,
 };
 
 // Flags.
 enum : uint16_t {
     kHtcConnFlagsDisableCreditFlow = 1 << 3,
     kHtcConnFlagsRecvAllocShift    = 8,
+    kHtcConnFlagsRecvAllocMask     = 0xFF00,
 };
 enum : uint8_t {
     kHtcTxFlagNeedCreditUpdate = 0x01,

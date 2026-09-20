@@ -13,6 +13,10 @@
 
 namespace qca {
 
+// PCI device ID of the adapter (QCA9377_1_0_DEVICE_ID) — written to
+// hi_hci_uart_pwr_mgmt_params_ext during target config (core.c:921).
+static const uint32_t kPciDevId = 0x0042;
+
 static inline uint32_t rdLe32(const uint8_t *p)
 {
     return OSReadLittleInt32(p, 0);
@@ -66,7 +70,10 @@ bool Fw::parseFirmware(FwImage *out)
             break;
         }
 
+        // Pad can round past the remaining bytes on a truncated tail IE.
         const uint32_t pad = (ieLen + 3) & ~3u;
+        if (pad > len)
+            break;
         data += pad;
         len  -= pad;
     }
@@ -124,6 +131,8 @@ bool Fw::selectBoard(const uint8_t *board2, uint32_t board2Len,
         }
 
         const uint32_t pad = (ieLen + 3) & ~3u;
+        if (pad > len)
+            break;
         data += pad;
         len  -= pad;
     }
@@ -154,6 +163,13 @@ bool Fw::configureTarget(Bmi *bmi)
 
     if (!bmi->write32(0x44, 0) || !bmi->write32(0x104, 0)) {
         IOLog("QCA9377-FW: be/fw_swap write failed\n");
+        return false;
+    }
+
+    // Sanity check that verifies the PCI device ID (required to boot the
+    // QCA6164 family; harmless elsewhere) — core.c:918-926.
+    if (!bmi->write32(0xbc, kPciDevId)) {
+        IOLog("QCA9377-FW: pwr_mgmt_params_ext write failed\n");
         return false;
     }
     IOLog("QCA9377-FW: target configured (htc=2, opt=0x%08x)\n", opt);

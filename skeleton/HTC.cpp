@@ -85,23 +85,25 @@ static inline void wr32(uint8_t *p, uint32_t v)
 
 void Htc::applyCreditReport(const uint8_t *trailer, uint32_t trailerLen)
 {
+    // Trailer records: 4-byte header {id, len, pad0, pad1} (htc.h:216-221);
+    // credit entries are 4 bytes each: {eid, credits, pad0, pad1}
+    // (htc.h:223-228, ath10k_htc_process_credit_report htc.c:249).
     uint32_t off = 0;
-    while (off + sizeof(HtcRecordHdr) <= trailerLen) {
-        HtcRecordHdr rh;
-        rh.id  = trailer[off];
-        rh.len = trailer[off + 1];
-        off += sizeof(HtcRecordHdr);
-        if (off + rh.len > trailerLen)
+    while (off + 2 <= trailerLen) {
+        const uint8_t recId  = trailer[off];
+        const uint8_t recLen = trailer[off + 1];
+        off += 4;                            // full record header
+        if (off + recLen > trailerLen)
             break;
-        if (rh.id == kHtcRecordCredits && rh.len >= 4) {
-            for (uint32_t i = 0; i + 4 <= rh.len; i += 4) {
+        if (recId == kHtcRecordCredits && recLen >= 4) {
+            for (uint32_t i = 0; i + 4 <= recLen; i += 4) {
                 uint8_t eid     = trailer[off + i];
                 uint8_t credits = trailer[off + i + 1];
                 if (eid == fWmiEid)
                     fWmiCredits += credits;
             }
         }
-        off += rh.len;
+        off += recLen;
     }
 }
 
@@ -200,6 +202,10 @@ uint32_t Htc::recvWmi(void *buf, uint32_t bufLen, uint32_t timeoutMs)
         IOLog("QCA9377-HTC: WMI hdr len %u > frame %u\n", len, rawLen);
         return 0;
     }
+    if (trailerLen > len) {              // ath10k htc.c:496-500 guard
+        IOLog("QCA9377-HTC: WMI trailer %u > len %u\n", trailerLen, len);
+        return 0;
+    }
 
     if (trailerLen && (flags & kHtcRxFlagTrailerPresent)) {
         const uint32_t trOff = sizeof(HtcFrameHdr) + len - trailerLen;
@@ -213,6 +219,7 @@ uint32_t Htc::recvWmi(void *buf, uint32_t bufLen, uint32_t timeoutMs)
         IOLog("QCA9377-HTC: WMI payload %u (buf %u)\n", payloadLen, bufLen);
         return 0;
     }
+    // Payload precedes the trailer; copy only the non-trailer prefix.
     for (uint32_t i = 0; i < payloadLen; i++)
         ((uint8_t *)buf)[i] = raw[sizeof(HtcFrameHdr) + i];
     return payloadLen;
@@ -277,12 +284,14 @@ bool Htc::connectService(uint16_t serviceId, uint8_t *outEid,
     cs->pad0      = 0;
     cs->pad1      = 0;
 
+    // Post the response recv BEFORE sending — the target may answer before
+    // our doorbell write returns (same ordering rule as recvWmi/BMI).
+    if (!fCe->postRecv())
+        return false;
     if (!sendCtrlFrame(payload, sizeof(payload)))
         return false;
 
     // Target responds on CE1 ep0.
-    if (!fCe->postRecv())
-        return false;
     if (!fCe->recvWait(kQCAExchangeTimeout_ms))
         return false;
 

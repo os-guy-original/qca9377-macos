@@ -96,11 +96,14 @@ bool Bmi::writeMemory(uint32_t addr, const void *buf, uint32_t len)
         uint32_t len;
         uint8_t  payload[kBmiMaxDataSize];
     } cmd;
-    const uint32_t hdrLen = 12;
+    // Payload cap: frame must fit kBmiMaxDataSize total (id+addr+len+data),
+    // matching ath10k's min(length, BMI_MAX_DATA_SIZE - hdrlen) (bmi.c:283).
+    const uint32_t hdrLen  = 12;
+    const uint32_t chunkCap = kBmiMaxDataSize - hdrLen;
 
     const uint8_t *p = (const uint8_t *)buf;
     while (len > 0) {
-        uint32_t tx = len < kBmiMaxDataSize ? len : kBmiMaxDataSize;
+        uint32_t tx = len < chunkCap ? len : chunkCap;
         bcopy(p, cmd.payload, tx);
         uint32_t padded = (tx + 3) & ~3u;
         cmd.id   = kBmiWriteMemory;
