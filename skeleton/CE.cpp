@@ -24,6 +24,7 @@
 #include "CE.hpp"
 #include <IOKit/IOLib.h>
 #include <IOKit/IOMemoryDescriptor.h>
+#include <IOKit/IOBufferMemoryDescriptor.h>
 #include <IOKit/IODMACommand.h>
 #include <libkern/c++/OSObject.h>
 
