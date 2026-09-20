@@ -21,6 +21,8 @@ targets:
       - path: skeleton/CE.cpp
       - path: skeleton/BMI.cpp
       - path: skeleton/FW.cpp
+      - path: skeleton/HTC.cpp
+      - path: skeleton/WMI.cpp
     settings:
       base:
         PRODUCT_NAME: QCA9377

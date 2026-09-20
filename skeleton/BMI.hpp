@@ -63,7 +63,7 @@ static_assert(sizeof(BmiRespGetTargetInfo) == 12, "bmi resp size");
 
 class Bmi {
 public:
-    explicit Bmi(CopyEngine *ce) : fCe(ce) {}
+    explicit Bmi(CEManager *ce) : fCe(ce) {}
 
     bool getTargetInfo();
 
@@ -86,7 +86,7 @@ public:
     bool done();
 
 private:
-    CopyEngine *fCe = nullptr;
+    CEManager *fCe = nullptr;
     uint32_t    fTargetVersion = 0;
     uint32_t    fTargetType    = 0;
     bool        fDoneSent      = false;

@@ -26,6 +26,8 @@
 #include "CE.hpp"
 #include "BMI.hpp"
 #include "FW.hpp"
+#include "HTC.hpp"
+#include "WMI.hpp"
 
 // Register map - every constant below is verified against the pinned ath10k
 // sources (ref/linux-ath10k), file and line cited inline. Do not edit values
@@ -89,8 +91,10 @@ private:
     uint16_t        fSubVendor  = 0;
     uint16_t        fSubDevice  = 0;
 
-    qca::CopyEngine *fCe = nullptr;
+    qca::CEManager *fCe = nullptr;
     qca::Bmi        *fBmi = nullptr;
+    qca::Htc        *fHtc = nullptr;
+    qca::Wmi        *fWmi = nullptr;
 
     uint32_t read32(uint32_t offset);
     void     write32(uint32_t offset, uint32_t value);
@@ -105,6 +109,8 @@ private:
     bool probeBmi(void);
 
     bool bootFirmware(void);
+
+    bool startHtcWmi(void);
 
     uint32_t ceBase(uint32_t ceId);
 };

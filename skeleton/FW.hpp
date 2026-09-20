@@ -71,7 +71,7 @@ public:
 
     static bool downloadFirmware(Bmi *bmi,
                                  const uint8_t *fw, uint32_t fwLen);
-    static bool doneAndWaitTargetInit(Bmi *bmi, class CopyEngine *unusedCe,
+    static bool doneAndWaitTargetInit(Bmi *bmi, class CEManager *unusedCe,
                                       volatile uint32_t *bar0);
 
     static const uint32_t kPatchLoadAddr      = 0x1234;

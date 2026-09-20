@@ -103,9 +103,19 @@ bool com_bswork_QCA9377::start(IOService *provider)
         IOLog("QCA9377: M3 skipped - BMI probe did not succeed\n");
     }
 
-    IOLog("QCA9377: SUMMARY ok=1 version=0.4.0 pciRev=0x%02x bmiTarget=0x%08x m3=%s\n",
+    // M4: HTC handshake + WMI-TLV SERVICE_READY/READY (poll-only). Verdict:
+    // target's firmware is alive and talking on CE2/CE3.
+    bool m4ok = false;
+    if (m3ok) {
+        m4ok = startHtcWmi();
+    } else {
+        IOLog("QCA9377: M4 skipped - firmware not booted\n");
+    }
+
+    IOLog("QCA9377: SUMMARY ok=1 version=0.5.0 pciRev=0x%02x bmiTarget=0x%08x m3=%s m4=%s\n",
           fPciRev, fBmi ? fBmi->targetVersion() : 0,
-          m3ok ? "BOOTED" : "no");
+          m3ok ? "BOOTED" : "no",
+          m4ok ? "WMI_ONLINE" : "no");
 
     IOLog("QCA9377: probe complete - staying passive (no MSI, no interrupts, no fw load)\n");
     registerService();
@@ -115,6 +125,8 @@ bool com_bswork_QCA9377::start(IOService *provider)
 void com_bswork_QCA9377::stop(IOService *provider)
 {
     IOLog("QCA9377: stop\n");
+    if (fWmi) { delete fWmi; fWmi = nullptr; }
+    if (fHtc) { delete fHtc; fHtc = nullptr; }
     if (fBmi) { delete fBmi; fBmi = nullptr; }
     if (fCe)  { fCe->destroy(); fCe = nullptr; }
     super::stop(provider);
@@ -214,11 +226,9 @@ void com_bswork_QCA9377::logRevisionInfo(void)
           socRev, name, fPciRev);
 }
 
-// truth). Ordering note: our recvPolling() posts the rx buffer before
-
 bool com_bswork_QCA9377::probeBmi(void)
 {
-    fCe = qca::CopyEngine::create(fBar0);
+    fCe = qca::CEManager::create(fBar0);
     if (!fCe || !fCe->init()) {
         IOLog("QCA9377: CE init failed\n");
         if (fCe) { fCe->destroy(); fCe = nullptr; }
@@ -288,6 +298,44 @@ bool com_bswork_QCA9377::bootFirmware(void)
     return true;
 }
 
+// M4: HTC over CE0/1, then WMI-TLV events over CE3/2 (poll-only).
+bool com_bswork_QCA9377::startHtcWmi(void)
+{
+    if (!fCe->initWmi()) {
+        IOLog("QCA9377: M4 WMI CE pair init failed\n");
+        return false;
+    }
+
+    fHtc = new qca::Htc(fCe);
+    if (!fHtc->waitTarget(10000)) {
+        IOLog("QCA9377: M4 HTC_READY not seen\n");
+        return false;
+    }
+
+    uint8_t eid = 0xFF;
+    uint16_t maxMsg = 0;
+    if (!fHtc->connectService(qca::kHtcSvcWmiControl, &eid, &maxMsg)) {
+        IOLog("QCA9377: M4 WMI service connect failed\n");
+        return false;
+    }
+    if (!fHtc->setupComplete()) {
+        IOLog("QCA9377: M4 SETUP_COMPLETE failed\n");
+        return false;
+    }
+
+    fWmi = new qca::Wmi(fHtc, fCe);
+    if (!fWmi->waitServiceAndReady(10000)) {
+        IOLog("QCA9377: M4 WMI SERVICE_READY/READY failed\n");
+        return false;
+    }
+
+    uint8_t mac[6];
+    fWmi->macAddress(mac);
+    IOLog("QCA9377: M4 WMI online - mac=%02x:%02x:%02x:%02x:%02x:%02x\n",
+          mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    return true;
+}
+
 // kmod linkage - the classic command-line kext recipe. libkmod does NOT
 // define kmod_info; every kext must define it (XNU osfmk/mach/kmod.h).
 // OpenCore's prelinker locates this symbol to wire _PrelinkKmodInfo; a
@@ -320,7 +368,7 @@ kmod_info_t kmod_info = {
     KMOD_INFO_VERSION,
     0,
     "com.bswork.QCA9377",
-    "0.4.0",
+    "0.5.0",
     -1,
     0, 0, 0, 0,
     qca9377_kmod_start,

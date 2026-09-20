@@ -1,5 +1,5 @@
 /*
- * CE.hpp — Copy Engine ring management for QCA9377 (M2).
+ * CE.hpp — Copy Engine ring management for QCA9377 (M2/M4).
  *
  * SPDX-License-Identifier: ISC
  * Portions derived from Linux ath10k (drivers/net/wireless/ath/ath10k/ce.c,
@@ -9,10 +9,17 @@
  * Derived from Linux v7.2.3 ath10k, sha256-pinned:
  * 8ba259e8e7b13ec6ef0941c8a39ad90b24bd4a4d6c0010ba6bafb794550ecd03.
  *
- * M2 SCOPE: polling driver, one command in flight. 16-entry rings
- * (ath10k uses 512/2048 — ring sizes are host-written, see CE.cpp).
- * Plain C++ class: allocation via kernel new (libkmodc++), no OSObject
- * machinery — this object never crosses IOKit's registry or retainer.
+ * Two ring pairs, one object:
+ *   ctrl pair: CE0 host->target, CE1 target->host (BMI + HTC control)
+ *   wmi  pair: CE3 host->target, CE2 target->host (WMI, M4)
+ * (pci_target_service_to_ce_map_wlan: WMI_CONTROL UL=3 DL=2,
+ *  RSVD_CTRL UL=0 DL=1.)
+ *
+ * Polling driver, one command in flight. 16-entry rings (ring sizes are
+ * host-written; ath10k uses 512/2048). Plain C++ class (libkmodc++).
+ *
+ * TRAP: descriptors are 32-bit bus addresses — a >4G DMA allocation is a
+ * hard error here (init() enforces).
  */
 
 #ifndef QCA9377_CE_hpp
@@ -30,61 +37,52 @@ struct CEDescriptor {
 
 static_assert(sizeof(CEDescriptor) == 8, "ce_desc must be 8 bytes");
 
-static const uint32_t kQCAPollStep_us       = 50;
+static const uint32_t kQCAPollStep_us        = 50;
 static const uint32_t kQCAExchangeTimeout_ms = 10000;
 
 namespace qca {
 
-class CopyEngine {
+class CECopyPair {
 public:
-
-    static CopyEngine *create(volatile uint32_t *bar0);
-    void destroy();
+    CECopyPair(volatile uint32_t *bar0, uint32_t srcCe, uint32_t dstCe);
 
     bool init();
+    void teardown();
 
     bool send(const void *buf, uint32_t len);
-
-    // Target->host exchange, ath10k ordering (pci.c:2155-2176):
-
+    // Post rx BEFORE the matching send — ath10k ordering (pci.c:2155-2176);
+    // posting after races the target's response.
     bool postRecv();
     bool recvWait(uint32_t timeoutMs);
-
-    // the response is not needed BEFORE the send — exchanges must use the
-
-    bool recvPolling(uint32_t timeoutMs);
 
     uint8_t *txBuf() { return fTxCpu; }
     uint8_t *rxBuf() { return fRxCpu; }
     uint32_t rxNbytes() const { return fRxNbytes; }
 
 private:
-    CopyEngine();
-    ~CopyEngine();
-    CopyEngine(const CopyEngine &) = delete;
-    CopyEngine &operator=(const CopyEngine &) = delete;
-
     bool allocRegion();
     void freeRegion();
 
     uint32_t read32(uint32_t offset)  { return OSReadLittleInt32(fBar0, offset); }
     void     write32(uint32_t offset, uint32_t v) { OSWriteLittleInt32(fBar0, offset, v); }
 
-    volatile uint32_t *fBar0 = nullptr;
+    volatile uint32_t *fBar0;
+    uint32_t fSrcCe;             // CE id, host->target
+    uint32_t fDstCe;             // CE id, target->host
 
     void    *fRegionCpu  = nullptr;
     uint64_t fRegionPhys = 0;
     uint32_t fRegionSize = 0;
 
-    // Ring geometry (ce.h:289-290: nentries must be a power of 2).
     static const uint32_t kRingN    = 16;
     static const uint32_t kRingMask = kRingN - 1;
 
-    static const uint32_t kTxBufSz  = 256;
-    static const uint32_t kRxBufSz  = 2048;
+    static const uint32_t kTxBufSz = 2048;
+    static const uint32_t kRxBufSz = 2048;
+    static const uint32_t kAlign   = 4096;
 
-    // so the buffers never need to grow.)
-    static const uint32_t kAlign    = 4096;
+    class IOBufferMemoryDescriptor *fMd = nullptr;
+    bool fMdPrepared = false;
 
     CEDescriptor *fSrcDesc = nullptr;
     CEDescriptor *fDstDesc = nullptr;
@@ -93,14 +91,52 @@ private:
     uint64_t fTxPhys = 0;
     uint64_t fRxPhys = 0;
 
-    uint32_t fSrcWrite = 0;
-    uint32_t fDstWrite = 0;
-    uint32_t fSrcSw    = 0;
-    uint32_t fDstSw    = 0;
-    uint32_t fRxNbytes = 0;
+    uint32_t fSrcWrite   = 0;
+    uint32_t fDstWrite   = 0;
+    uint32_t fSrcSw      = 0;
+    uint32_t fDstSw      = 0;
+    uint32_t fRxNbytes   = 0;
     uint32_t fPostedIndex = 0;
 };
 
-}
+class CEManager {
+public:
+    static CEManager *create(volatile uint32_t *bar0);
+    void destroy();
+
+    bool init();
+    bool initWmi();            // WMI pair (M4); call after BMI is up
+
+    // Control pair (CE0/CE1) — BMI + HTC. Same surface as the old class.
+    bool send(const void *buf, uint32_t len)     { return fCtrl->send(buf, len); }
+    bool postRecv()                              { return fCtrl->postRecv(); }
+    bool recvWait(uint32_t timeoutMs)            { return fCtrl->recvWait(timeoutMs); }
+    uint8_t *txBuf()                             { return fCtrl->txBuf(); }
+    uint8_t *rxBuf()                             { return fCtrl->rxBuf(); }
+    uint32_t rxNbytes() const                    { return fCtrl->rxNbytes(); }
+
+    // WMI pair (CE3/CE2).
+    bool wmiSend(const void *buf, uint32_t len)  { return fWmi->send(buf, len); }
+    bool wmiPostRecv()                           { return fWmi->postRecv(); }
+    bool wmiRecvWait(uint32_t timeoutMs)         { return fWmi->recvWait(timeoutMs); }
+    // Pre-arm: keep exactly one rx buffer posted on CE2 at all times so an
+    // asynchronous SERVICE_READY can't be dropped before we poll for it.
+    void wmiArmRecv()                            { (void)fWmi->postRecv(); }
+    uint8_t *wmiTxBuf()                          { return fWmi->txBuf(); }
+    uint8_t *wmiRxBuf()                          { return fWmi->rxBuf(); }
+    uint32_t wmiRxNbytes() const                 { return fWmi->rxNbytes(); }
+
+private:
+    CEManager() = default;
+    ~CEManager() = default;
+    CEManager(const CEManager &) = delete;
+    CEManager &operator=(const CEManager &) = delete;
+
+    volatile uint32_t *fBar0 = nullptr;
+    CECopyPair *fCtrl = nullptr;
+    CECopyPair *fWmi  = nullptr;
+};
+
+} // namespace qca
 
 #endif

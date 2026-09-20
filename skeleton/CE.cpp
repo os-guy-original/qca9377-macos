@@ -1,5 +1,5 @@
 /*
- * CE.cpp — Copy Engine ring management for QCA9377 (M2).
+ * CE.cpp — Copy Engine ring management for QCA9377 (M2/M4).
  *
  * SPDX-License-Identifier: ISC
  * Portions derived from Linux ath10k ce.c/ce.h (see CE.hpp for the full
@@ -8,24 +8,20 @@
  * Ring programming, register-for-register (qcax_ce_regs, hw.c:462-476;
  * CE base ath10k_ce_base_address, ce.h:341; qca6174 bases hw.c:52-59):
  *
- *   SRC ring (CE0):  base+0x00 = ring bus addr (sr_base_addr_lo)
- *                    base+0x04 = nentries      (sr_size_addr)
- *                    base+0x3c = host write index doorbell (sr_wr_index_addr)
- *                    base+0x44 = target read index (current_srri_addr) [RO]
- *   DST ring (CE1):  base+0x08 = ring bus addr (dr_base_addr_lo)
- *                    base+0x0c = nentries      (dr_size_addr)
- *                    base+0x40 = host write index doorbell (dst_wr_index_addr)
- *                    base+0x48 = target completion index (current_drri_addr)[RO]
+ *   SRC ring:  base+0x00 sr_base_addr_lo, base+0x04 sr_size
+ *              base+0x3c sr_wr_index doorbell, base+0x44 SRRI [RO]
+ *   DST ring:  base+0x08 dr_base_addr_lo, base+0x0c dr_size
+ *              base+0x40 dst_wr_index doorbell, base+0x48 DRRI [RO]
  *
- * Descriptor DMA semantics: the engine DMAs descriptors to/from system RAM
- * (ath10k_ce_init_src_ring memsets the host ring and hands the bus address
- * to the engine — ce.c:1369-1384). We use one physically-contiguous
- * IOMallocContiguous region, write descriptors with OSSynchronizeIO() fences, and
- * re-read them from RAM on completion (ce.c:756-775).
+ * Descriptor DMA: engine DMAs descriptors to/from system RAM; host writes
+ * descriptors with OSSynchronizeIO() fences and re-reads them on completion.
+ * TRAP: descriptors are 32-bit bus addresses — all DMA memory must be
+ * allocated with a 32-bit physical mask (IOBufferMemoryDescriptor with
+ * kIOMemoryPhysicallyContiguous + physMask), or init() fails here.
  */
 
 #include "CE.hpp"
-#include "QCA9377Driver.hpp"
+#include <libkern/c++/IOBufferMemoryDescriptor.h>
 
 namespace qca {
 
@@ -39,40 +35,51 @@ static const uint32_t kCECurrentSRRI = 0x44;
 static const uint32_t kCECurrentDRRI = 0x48;
 
 static const uint32_t kCE0Base = 0x00034400;
-static const uint32_t kCE1Base = 0x00034800;
+static const uint32_t kCEStride = 0x400;
+static inline uint32_t ceBase(uint32_t ce) { return kCE0Base + kCEStride * ce; }
 
-CopyEngine::CopyEngine() = default;
-CopyEngine::~CopyEngine() { freeRegion(); }
+CECopyPair::CECopyPair(volatile uint32_t *bar0, uint32_t srcCe, uint32_t dstCe)
+    : fBar0(bar0), fSrcCe(srcCe), fDstCe(dstCe) {}
 
-CopyEngine *CopyEngine::create(volatile uint32_t *bar0)
+bool CECopyPair::allocRegion()
 {
-    CopyEngine *ce = new CopyEngine();
-    if (!ce)
-        return nullptr;
-    ce->fBar0 = bar0;
-    IOLog("QCA9377-CE: created\n");
-    return ce;
-}
-
-void CopyEngine::destroy()
-{
-    delete this;
-}
-
-bool CopyEngine::allocRegion()
-{
-    const uint32_t ringBytes = kRingN * (uint32_t)sizeof(CEDescriptor);
-    const uint32_t ringAligned = (ringBytes + kAlign - 1) & ~(kAlign - 1);
-    const uint32_t txAligned   = (kTxBufSz + kAlign - 1) & ~(kAlign - 1);
-    const uint32_t rxAligned   = (kRxBufSz + kAlign - 1) & ~(kAlign - 1);
+    const uint32_t ringBytes    = kRingN * (uint32_t)sizeof(CEDescriptor);
+    const uint32_t ringAligned  = (ringBytes + kAlign - 1) & ~(kAlign - 1);
+    const uint32_t txAligned    = (kTxBufSz + kAlign - 1) & ~(kAlign - 1);
+    const uint32_t rxAligned    = (kRxBufSz + kAlign - 1) & ~(kAlign - 1);
     fRegionSize = 2 * ringAligned + txAligned + rxAligned;
 
-    fRegionCpu = IOMallocContiguous(fRegionSize, kAlign, &fRegionPhys);
-    if (!fRegionCpu || !fRegionPhys) {
-        IOLog("QCA9377-CE: IOMallocContiguous(%u) failed\n", fRegionSize);
+    // TRAP: CE descriptors carry 32-bit bus addresses. Constrain the
+    // allocation to <4G via the physical mask (10.4 fw consumes what the
+    // engine DMAs; any 64-bit address here corrupts silently).
+    IOBufferMemoryDescriptor *md =
+        IOBufferMemoryDescriptor::inTaskWithPhysicalMask(
+            kernel_task, kIOMemoryPhysicallyContiguous | kIODirectionInOut,
+            fRegionSize, 0xFFFFFFFFULL);
+    if (!md) {
+        IOLog("QCA9377-CE%u/%u: buffer alloc failed\n", fSrcCe, fDstCe);
+        return false;
+    }
+    if (md->prepare(kIODirectionInOut) != kIOReturnSuccess) {
+        IOLog("QCA9377-CE%u/%u: prepare failed\n", fSrcCe, fDstCe);
+        md->release();
+        return false;
+    }
+
+    fRegionCpu  = (void *)md->getBytesNoCopy();
+    IOByteCount segLen = 0;
+    uint64_t phys = md->getPhysicalSegment64(0, &segLen);
+    if (!phys || (phys & ~0xFFFFFFFFULL)) {
+        IOLog("QCA9377-CE%u/%u: phys 0x%llx exceeds 32-bit mask\n",
+              fSrcCe, fDstCe, phys);
+        md->complete();
+        md->release();
         fRegionCpu = nullptr;
         return false;
     }
+    fRegionPhys = phys;
+    fMd = md;                       // keep for complete()/release()
+    fMdPrepared = true;
 
     uint8_t *cpu = (uint8_t *)fRegionCpu;
     fSrcDesc = (CEDescriptor *)cpu;
@@ -82,23 +89,23 @@ bool CopyEngine::allocRegion()
     fTxPhys  = fRegionPhys + 2 * ringAligned;
     fRxPhys  = fTxPhys + txAligned;
 
-    IOLog("QCA9377-CE: region phys=0x%llx size=%u "
-          "src@0x%llx dst@0x%llx tx@0x%llx rx@0x%llx\n",
-          fRegionPhys, fRegionSize,
-          fRegionPhys, fRegionPhys + ringAligned, fTxPhys, fRxPhys);
+    IOLog("QCA9377-CE%u/%u: region phys=0x%llx size=%u\n",
+          fSrcCe, fDstCe, fRegionPhys, fRegionSize);
     return true;
 }
 
-void CopyEngine::freeRegion()
+void CECopyPair::freeRegion()
 {
-    if (fRegionCpu) {
-        IOFreeContiguous(fRegionCpu, fRegionSize);
-        fRegionCpu = nullptr;
-        fRegionPhys = 0;
+    if (fMd) {
+        if (fMdPrepared) { fMd->complete(); fMdPrepared = false; }
+        fMd->release();
+        fMd = nullptr;
     }
+    fRegionCpu = nullptr;
+    fRegionPhys = 0;
 }
 
-bool CopyEngine::init()
+bool CECopyPair::init()
 {
     if (!fBar0 || !allocRegion())
         return false;
@@ -108,39 +115,41 @@ bool CopyEngine::init()
     const uint64_t srcBus = fRegionPhys;
     const uint64_t dstBus = fRegionPhys + ringAligned;
 
-    fSrcSw    = read32(kCE0Base + kCECurrentSRRI) & kRingMask;
-    fSrcWrite = read32(kCE0Base + kCESRWrIndex)   & kRingMask;
-    fDstSw    = read32(kCE1Base + kCECurrentDRRI) & kRingMask;
-    fDstWrite = read32(kCE1Base + kCEDSTWrIndex)  & kRingMask;
+    // Seed indices from current hardware state (previous OS may leave the
+    // rings programmed — warm-boot case).
+    fSrcSw    = read32(ceBase(fSrcCe) + kCECurrentSRRI) & kRingMask;
+    fSrcWrite = read32(ceBase(fSrcCe) + kCESRWrIndex)   & kRingMask;
+    fDstSw    = read32(ceBase(fDstCe) + kCECurrentDRRI) & kRingMask;
+    fDstWrite = read32(ceBase(fDstCe) + kCEDSTWrIndex)  & kRingMask;
 
-    write32(kCE0Base + kCESRBaseLo, (uint32_t)srcBus);
-    write32(kCE0Base + kCESRSize,   kRingN);
-    write32(kCE1Base + kCEDRBaseLo, (uint32_t)dstBus);
-    write32(kCE1Base + kCEDRSize,   kRingN);
+    write32(ceBase(fSrcCe) + kCESRBaseLo, (uint32_t)srcBus);
+    write32(ceBase(fSrcCe) + kCESRSize,   kRingN);
+    write32(ceBase(fDstCe) + kCEDRBaseLo, (uint32_t)dstBus);
+    write32(ceBase(fDstCe) + kCEDRSize,   kRingN);
     OSSynchronizeIO();
 
-    IOLog("QCA9377-CE: init sr@0x%llx dr@0x%llx n=%u "
-          "(hw idx src w=%u r=%u dst w=%u r=%u)\n",
-          srcBus, dstBus, kRingN, fSrcWrite, fSrcSw, fDstWrite, fDstSw);
+    IOLog("QCA9377-CE%u/%u: init sr@0x%llx dr@0x%llx n=%u (hw idx sw=%u w=%u)\n",
+          fSrcCe, fDstCe, srcBus, dstBus, kRingN, fSrcSw, fSrcWrite);
     return true;
 }
 
-bool CopyEngine::send(const void *buf, uint32_t len)
+bool CECopyPair::send(const void *buf, uint32_t len)
 {
     if (len == 0 || len > kTxBufSz || len > 0xFFFF) {
-        IOLog("QCA9377-CE: send bad len %u\n", len);
+        IOLog("QCA9377-CE%u: send bad len %u\n", fSrcCe, len);
         return false;
     }
 
+    // One in flight: wait until the engine consumed everything written.
     const uint32_t deadline = kQCAExchangeTimeout_ms * 1000 / kQCAPollStep_us;
-    uint32_t srri = read32(kCE0Base + kCECurrentSRRI) & kRingMask;
+    uint32_t srri = read32(ceBase(fSrcCe) + kCECurrentSRRI) & kRingMask;
     for (uint32_t i = 0; i < deadline && srri != fSrcWrite; i++) {
         IODelay(kQCAPollStep_us);
-        srri = read32(kCE0Base + kCECurrentSRRI) & kRingMask;
+        srri = read32(ceBase(fSrcCe) + kCECurrentSRRI) & kRingMask;
     }
     if (srri != fSrcWrite) {
-        IOLog("QCA9377-CE: send pre-wait timeout (SRRI=%u w=%u)\n",
-              srri, fSrcWrite);
+        IOLog("QCA9377-CE%u: send pre-wait timeout (SRRI=%u w=%u)\n",
+              fSrcCe, srri, fSrcWrite);
         return false;
     }
 
@@ -155,25 +164,23 @@ bool CopyEngine::send(const void *buf, uint32_t len)
     OSSynchronizeIO();
 
     fSrcWrite = (fSrcWrite + 1) & kRingMask;
-    write32(kCE0Base + kCESRWrIndex, fSrcWrite);
+    write32(ceBase(fSrcCe) + kCESRWrIndex, fSrcWrite);
     OSSynchronizeIO();
 
-    srri = read32(kCE0Base + kCECurrentSRRI) & kRingMask;
+    srri = read32(ceBase(fSrcCe) + kCECurrentSRRI) & kRingMask;
     for (uint32_t i = 0; i < deadline && srri != fSrcWrite; i++) {
         IODelay(kQCAPollStep_us);
-        srri = read32(kCE0Base + kCECurrentSRRI) & kRingMask;
+        srri = read32(ceBase(fSrcCe) + kCECurrentSRRI) & kRingMask;
     }
     if (srri != fSrcWrite) {
-        IOLog("QCA9377-CE: send completion timeout (SRRI=%u w=%u)\n",
-              srri, fSrcWrite);
+        IOLog("QCA9377-CE%u: send completion timeout (SRRI=%u w=%u)\n",
+              fSrcCe, srri, fSrcWrite);
         return false;
     }
     return true;
 }
 
-// MUST be called before the corresponding send() — ath10k posts rx first
-
-bool CopyEngine::postRecv()
+bool CECopyPair::postRecv()
 {
     CEDescriptor d;
     d.addr   = (uint32_t)fRxPhys;
@@ -184,29 +191,30 @@ bool CopyEngine::postRecv()
 
     fPostedIndex = fDstWrite;
     fDstWrite = (fDstWrite + 1) & kRingMask;
-    write32(kCE1Base + kCEDSTWrIndex, fDstWrite);
+    write32(ceBase(fDstCe) + kCEDSTWrIndex, fDstWrite);
     OSSynchronizeIO();
     return true;
 }
 
-// race).
-bool CopyEngine::recvWait(uint32_t timeoutMs)
+bool CECopyPair::recvWait(uint32_t timeoutMs)
 {
     const uint32_t posted = fPostedIndex;
     const uint32_t deadline = timeoutMs * 1000 / kQCAPollStep_us;
-    uint32_t drri = read32(kCE1Base + kCECurrentDRRI) & kRingMask;
+    uint32_t drri = read32(ceBase(fDstCe) + kCECurrentDRRI) & kRingMask;
     for (uint32_t i = 0; i < deadline && drri == fDstSw; i++) {
         IODelay(kQCAPollStep_us);
-        drri = read32(kCE1Base + kCECurrentDRRI) & kRingMask;
+        drri = read32(ceBase(fDstCe) + kCECurrentDRRI) & kRingMask;
     }
     if (drri == fDstSw) {
-        IOLog("QCA9377-CE: recv timeout (DRRI=%u sw=%u)\n", drri, fDstSw);
+        IOLog("QCA9377-CE%u: recv timeout (DRRI=%u sw=%u)\n", fDstCe, drri, fDstSw);
         return false;
     }
 
     CEDescriptor d = fDstDesc[posted];
     if (d.nbytes == 0) {
-        IOLog("QCA9377-CE: DRRI moved but nbytes==0 (race; ce.c:771-776)\n");
+        // Race guard (ce.c:771-776): DRRI moved before the descriptor DMA
+        // landed. Treat as not-done.
+        IOLog("QCA9377-CE%u: DRRI moved but nbytes==0 (race)\n", fDstCe);
         return false;
     }
     fRxNbytes = d.nbytes;
@@ -215,10 +223,48 @@ bool CopyEngine::recvWait(uint32_t timeoutMs)
     return true;
 }
 
-bool CopyEngine::recvPolling(uint32_t timeoutMs)
+// ---------------------------------------------------------------------------
+// CEManager
+// ---------------------------------------------------------------------------
+
+CEManager *CEManager::create(volatile uint32_t *bar0)
 {
-    if (!postRecv()) return false;
-    return recvWait(timeoutMs);
+    CEManager *m = new CEManager();
+    if (!m) return nullptr;
+    m->fBar0 = bar0;
+    IOLog("QCA9377-CE: manager created\n");
+    return m;
 }
 
+void CEManager::destroy()
+{
+    if (fCtrl) { fCtrl->teardown(); delete fCtrl; fCtrl = nullptr; }
+    if (fWmi)  { fWmi->teardown();  delete fWmi;  fWmi  = nullptr; }
+    delete this;
 }
+
+bool CEManager::init()
+{
+    fCtrl = new CECopyPair(fBar0, 0, 1);   // CE0 host->t, CE1 t->host
+    if (!fCtrl) return false;
+    if (!fCtrl->init()) {
+        delete fCtrl; fCtrl = nullptr;
+        return false;
+    }
+    return true;
+}
+
+bool CEManager::initWmi()
+{
+    if (fWmi) return true;                 // already up
+    fWmi = new CECopyPair(fBar0, 3, 2);    // CE3 host->t, CE2 t->host
+    if (!fWmi) return false;
+    if (!fWmi->init()) {
+        delete fWmi; fWmi = nullptr;
+        IOLog("QCA9377-CE: WMI pair init failed\n");
+        return false;
+    }
+    return true;
+}
+
+} // namespace qca

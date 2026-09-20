@@ -225,7 +225,7 @@ bool Fw::downloadFirmware(Bmi *bmi, const uint8_t *fw, uint32_t fwLen)
     return true;
 }
 
-bool Fw::doneAndWaitTargetInit(Bmi *bmi, class CopyEngine *unusedCe,
+bool Fw::doneAndWaitTargetInit(Bmi *bmi, class CEManager *unusedCe,
                                volatile uint32_t *bar0)
 {
     (void)unusedCe;
