@@ -89,7 +89,7 @@ jobs:
           set -o pipefail
           xcodebuild -project QCA9377.xcodeproj \
             -target QCA9377 -configuration Release SYMROOT=build-advisory \
-            OTHER_CPLUSPLUSFLAGS='(inherited) -Wextra -Wpedantic' \
+            OTHER_CPLUSPLUSFLAGS='$(inherited) -Wextra -Wpedantic' \
             2>&1 | tee advisory.log | xcbeautify
       - name: Advisory report
         if: always()
