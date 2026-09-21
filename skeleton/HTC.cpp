@@ -73,14 +73,6 @@ static inline void wr16(uint8_t *p, uint16_t v)
     p[1] = (uint8_t)(v >> 8);
 }
 
-static inline void wr32(uint8_t *p, uint32_t v)
-{
-    p[0] = (uint8_t)(v & 0xFF);
-    p[1] = (uint8_t)((v >> 8) & 0xFF);
-    p[2] = (uint8_t)((v >> 16) & 0xFF);
-    p[3] = (uint8_t)((v >> 24) & 0xFF);
-}
-
 // ---- credit accounting ----------------------------------------------------
 
 void Htc::applyCreditReport(const uint8_t *trailer, uint32_t trailerLen)
@@ -233,7 +225,6 @@ bool Htc::waitTarget(uint32_t timeoutMs)
     if (!fCe->postRecv())
         return false;
 
-    uint8_t raw[2048];
     if (!fCe->recvWait(timeoutMs))
         return false;
 

@@ -30,6 +30,14 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.bswork.QCA9377
         INFOPLIST_FILE: skeleton/Info.plist
         # Kernel-extension compile/link flags (what Xcode's kext template emits):
+        # WARNING: do NOT add -fvisibility=hidden here. It hides every class
+        # symbol (metaClass/gMetaClass/superClass/vtables) from the kext symtab
+        # (definitions become LOCAL, cross-TU refs stay N_PEXT|UNDEF), so OC's
+        # prelinker cannot bind them -> "Prelinked injection ... Invalid
+        # Parameter" on EVERY boot (root cause found 2026-09-21 by comparing
+        # our 5 N_EXT exports vs VoodooPS2's 169). Exported symbols are what
+        # kxld/OC links against; the template approach is visibility=DEFAULT
+        # + GCC_SYMBOLS_PRIVATE_EXTERN=NO (set below).
         # Warning triage (build 35519422919 audit, 2026-09-20): ALL warnings
         # in our CI come from Apple SDK headers (Kernel.framework's own
         # quoted includes, IOService/IOPCIDevice doc-comment and override
@@ -37,7 +45,11 @@ targets:
         # skeleton/. The -Wno-* flags below silence SDK-header noise ONLY
         # (they do not hide warnings in code we compile from our sources,
         # which keep full warnings incl. -Wall).
-        OTHER_CFLAGS: "$(inherited) -fapple-kext -fno-exceptions -fno-rtti -fno-check-new -fvisibility=hidden -mkernel -Wall -Wno-quoted-include-in-framework-header -Wno-documentation -Wno-inconsistent-missing-override"
+        OTHER_CFLAGS: "$(inherited) -fapple-kext -fno-exceptions -fno-rtti -fno-check-new -mkernel -Wall -Wno-quoted-include-in-framework-header -Wno-documentation -Wno-inconsistent-missing-override"
+        # Export ALL non-static symbols (kext template defaults; explicit so
+        # bundle-type Release builds don't privately-extern them):
+        GCC_SYMBOLS_PRIVATE_EXTERN: NO
+        GCC_INLINES_ARE_PRIVATE_EXTERN: NO
         # -nostdlib removes ALL userspace defaults (crt, -lSystem, -lc++);
         # -lkmodc++/-lkmod provide the kernel-side glue (C++ support stubs).
         # kmod_info is NOT in libkmod — the driver defines it in source

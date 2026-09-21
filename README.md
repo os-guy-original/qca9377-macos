@@ -4,9 +4,12 @@ A macOS driver for the Qualcomm Atheros **QCA9377** Wi-Fi adapter
 (PCI `168c:0042`), built by adapting the Linux `ath10k` driver to Apple's
 IOKit/XNU kernel.
 
-**Status: v0.5.2 — the full boot chain through M4 is implemented (probe,
-Copy Engines + BMI, firmware load/boot, HTC + WMI-TLV). The next boot test
-shows whether the firmware answers (`WMI_READY_EVENT`); no Wi-Fi yet.** See
+**Status: v0.5.3 — the full boot chain through M4 is implemented (probe,
+Copy Engines + BMI, firmware load/boot, HTC + WMI-TLV). v0.5.3 fixes the
+root cause of every prior boot rejection (class symbols were hidden by
+`-fvisibility=hidden`; OpenCore's prelinker can only bind exported
+symbols). The next boot test shows whether the firmware answers
+(`WMI_READY_EVENT`); no Wi-Fi yet.** See
 the [roadmap](#roadmap) for what works and what is still ahead.
 
 ## Why this is possible

@@ -146,3 +146,29 @@ pinned source could be consulted.
 - CI taken green after three documented fix cycles; artifact battery
   (plist, Mach-O type, NOUNDEFS, `_kmod_info`, KC import gate) runs on
   every pulled artifact before deployment.
+
+## Root cause found: the visibility bug (v0.5.3, 2026-09-21)
+
+- **Symptom**: every injected version (v0.1.0 → v0.5.2) was rejected at
+  prelink with `OC: Prelinked injection QCA9377.kext - Invalid Parameter`.
+  There was never a working baseline to bisect from.
+- **Diagnosis path**: catalogued all 118 kexts embedded in the Recovery
+  aux KC (user's idea — study what *does* load), extracted the real
+  `BootKernelExtensions.kc` (63 MB, kernel + KPIs) from the DMG, proved
+  all 315 imports resolve from boot∪aux exports (symbol theory dead),
+  then compared external-symbol counts against the known-loading
+  VoodooPS2Controller: ours 5, theirs 169.
+- **Root cause**: `-fvisibility=hidden` in our build recipe demoted every
+  class symbol (`metaClass`, `gMetaClass`, `superClass`, vtables) to LOCAL
+  while cross-TU references stayed external-undefined. OpenCore's
+  prelinker binds against external definitions only → unresolved
+  `metaClass` → `InternalPrelinkKext` LOAD_ERROR → remapped to
+  `EFI_INVALID_PARAMETER` by the caller.
+- **Fix**: remove `-fvisibility=hidden`; set `GCC_SYMBOLS_PRIVATE_EXTERN=NO`
+  and `GCC_INLINES_ARE_PRIVATE_EXTERN=NO` (the Xcode kext template's own
+  values). Deferred hygiene landed in the same change set (dead `raw[2048]`,
+  unused `wr32`), version bumped 0.5.2 → 0.5.3 everywhere.
+- **Gate v2**: the pre-boot check now parses both Recovery KCs directly,
+  resolves imports against their true export pool, and runs an export
+  census that fails on exactly the self-shadowed-symbol pathology this
+  bug produced (validated: fails v0.5.2/v0.1.0, passes VoodooPS2).
