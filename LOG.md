@@ -102,3 +102,45 @@ pinned source could be consulted.
 - Operational lesson: capture tooling that writes to the recovery RAM
   disk must be delivered to external storage before rebooting, or the
   data is lost.
+
+## Sessions 9-17 (2026-09-19/20) — the kernelcache oracle, v0.5.x arc
+
+- **Firmware IE parsing caught a silent bug**: the first parse of the
+  firmware container "showed" no image inside `firmware-6.bin`. The parse
+  had died silently on an odd-length OTP IE (missing 4-byte alignment).
+  Fixed parser proves both firmware files complete; the target's
+  `WMI_OP_VERSION = 4` also identified the firmware as **WMI-TLV** —
+  all M4 protocol work pulled from `wmi-tlv.c`, not the main WMI.
+- **Boot rejection #2, root-caused from ground truth**: v0.5.0 was
+  rejected at prelink (`Invalid Parameter`) despite a structurally
+  identical plist. Instead of guessing, the actual recovery
+  `BaseSystemKernelExtensions.kc` was pulled from the injected DMG and
+  used as the export oracle: `_IOMallocContiguous`/`_IOFreeContiguous`
+  are **absent** from the recovery kernelcache, and one own-class method
+  (`CECopyPair::teardown`) was declared+called but never defined. Either
+  alone poisons the link (unresolved → LOAD_ERROR → surfaced as
+  Invalid Parameter).
+- **Fix (v0.5.1)**: DMA allocation moved to
+  `IOBufferMemoryDescriptor::inTaskWithPhysicalMask` +
+  `IODMACommand::withSpecification(kIODMACommandOutputHost64, 32 bits,
+  …)` — the exact symbols the KC exports (cross-checked against xnu
+  headers and a reference open-source driver's usage). The 32-bit mask
+  is now enforced at allocation, not checked after the fact.
+  `teardown()` defined: parks ring registers before freeing DMA memory.
+- **Permanent payoff — the pre-boot gate**: a 76k-symbol oracle extracted
+  from the real KC plus a checker script. Validated both directions:
+  v0.5.0 fails with exactly the three killer symbols; v0.5.1 passes.
+  New rule: no boot test until the gate passes (see `docs/HARDENING.md`).
+- **Full audit against the pinned ath10k sources (v0.5.2)**: two
+  boot-blockers found and fixed — the CE `recvWait` consumer never
+  recovered from the nbytes==0 hardware race (every later exchange read
+  the wrong slot; now polls the descriptor to landing like
+  `completed_recv_next`), and the HTC WMI service ID was 0x0400 instead
+  of 0x0100 (`ATH10K_HTC_SVC_GRP_WMI = 1`) — M4 could never have
+  connected. Plus: post-recv-before-send ordering, 244-byte BMI chunk
+  cap (256−12 header), credit-report records parsed as 4-byte entries,
+  IE-loop pad-underflow guards, `hi_hci_uart_pwr_mgmt_params_ext` write
+  (required for this chip family per `core.c`), version-label sync.
+- CI taken green after three documented fix cycles; artifact battery
+  (plist, Mach-O type, NOUNDEFS, `_kmod_info`, KC import gate) runs on
+  every pulled artifact before deployment.
