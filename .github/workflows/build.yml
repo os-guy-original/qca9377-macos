@@ -71,3 +71,29 @@ jobs:
         with:
           name: build-log
           path: build.log
+
+  advisory:
+    # Stricter-flags audit: surfaces latent issues without blocking releases
+    # (the build job stays the release gate).
+    runs-on: macos-15
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: brew install xcodegen xcbeautify
+      - name: Generate project
+        run: xcodegen generate
+      - name: Build with -Wextra -Wpedantic
+        run: |
+          set -o pipefail
+          xcodebuild -project QCA9377.xcodeproj \
+            -target QCA9377 -configuration Release SYMROOT=build-advisory \
+            OTHER_CPLUSPLUSFLAGS='(inherited) -Wextra -Wpedantic' \
+            2>&1 | tee advisory.log | xcbeautify
+      - name: Advisory report
+        if: always()
+        run: |
+          echo "=== warnings from our sources (skeleton/) ==="
+          grep -E 'skeleton/.*warning:' advisory.log || echo "none"
+          grep -cE 'skeleton/.*warning:' advisory.log | sed 's/^/total: /' || true
