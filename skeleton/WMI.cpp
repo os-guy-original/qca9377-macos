@@ -11,7 +11,6 @@
 
 namespace qca {
 
-static const uint32_t kWmiEventTimeout_ms = 10000;
 
 // ---- TLV iterator (wmi-tlv.c ath10k_wmi_tlv_iter) --------------------------
 
