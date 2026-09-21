@@ -172,3 +172,19 @@ pinned source could be consulted.
   resolves imports against their true export pool, and runs an export
   census that fails on exactly the self-shadowed-symbol pathology this
   bug produced (validated: fails v0.5.2/v0.1.0, passes VoodooPS2).
+## 2026-09-21 — v0.5.4: IOPCIFamily dependency fix (root cause #2)
+
+First DEBUG-OpenCore boot log named the failure exactly:
+`OCAK: Symbol __ZN11IOPCIDevice9metaClassE has 0-value`. OC resolves
+undefined symbols only from the kext's own externals plus the KC filesets
+of its **declared** OSBundleLibraries; `IOPCIDevice` lives in
+`com.apple.iokit.IOPCIFamily`, which was never declared. Every injection
+since v0.1.0 failed for this reason (stacked with the v0.5.3 visibility
+fix).
+
+- Declare `com.apple.iokit.IOPCIFamily: 2.9` (mirrors VoodooI2C, which
+  links IOPCIDevice successfully with exactly this declaration)
+- New strict gate (`check-deps.py`): parses all 211 boot-KC filesets,
+  requires every undefined symbol to resolve via own-externals / kernel /
+  declared families — reproduces the boot-log failure matrix exactly
+  (old plist: 3 fails = the 3 log-named symbols; fixed: 315/315)

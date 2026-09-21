@@ -112,7 +112,7 @@ bool com_bswork_QCA9377::start(IOService *provider)
         IOLog("QCA9377: M4 skipped - firmware not booted\n");
     }
 
-    IOLog("QCA9377: SUMMARY ok=1 version=0.5.3 pciRev=0x%02x bmiTarget=0x%08x m3=%s m4=%s\n",
+    IOLog("QCA9377: SUMMARY ok=1 version=0.5.4 pciRev=0x%02x bmiTarget=0x%08x m3=%s m4=%s\n",
           fPciRev, fBmi ? fBmi->targetVersion() : 0,
           m3ok ? "BOOTED" : "no",
           m4ok ? "WMI_ONLINE" : "no");
@@ -368,7 +368,7 @@ kmod_info_t kmod_info = {
     KMOD_INFO_VERSION,
     0,
     "com.bswork.QCA9377",
-    "0.5.3",
+    "0.5.4",
     -1,
     0, 0, 0, 0,
     qca9377_kmod_start,
