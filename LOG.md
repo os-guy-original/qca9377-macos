@@ -76,9 +76,11 @@ pinned source could be consulted.
 
 ## Next
 
-- M1 verdict on real hardware (`chip_id == 0x003821ff` in the boot log).
-- M2: Copy Engine rings + BMI handshake, ported from the pinned
-  `ce.c`/`pci.c`.
+- Boot test of v0.5.2: the recovery boot log's SUMMARY line should read
+  `m3=BOOTED m4=WMI_ONLINE` with the target's MAC address and RF chain
+  count — hardware confirmation that the firmware speaks.
+- M4 (HTT data path) planning: service connection for the data pipe,
+  HTT sync, ring setup above the existing CE/HTC layers.
 
 ## Sessions 4-8 (2026-09-18) — published, first boot test, kmod_info fix
 

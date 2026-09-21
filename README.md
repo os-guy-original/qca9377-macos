@@ -4,8 +4,10 @@ A macOS driver for the Qualcomm Atheros **QCA9377** Wi-Fi adapter
 (PCI `168c:0042`), built by adapting the Linux `ath10k` driver to Apple's
 IOKit/XNU kernel.
 
-**Status: M1 — probe skeleton. This does not provide Wi-Fi yet.** See the
-[roadmap](#roadmap) for what works and what is still ahead.
+**Status: v0.5.2 — the full boot chain through M4 is implemented (probe,
+Copy Engines + BMI, firmware load/boot, HTC + WMI-TLV). The next boot test
+shows whether the firmware answers (`WMI_READY_EVENT`); no Wi-Fi yet.** See
+the [roadmap](#roadmap) for what works and what is still ahead.
 
 ## Why this is possible
 
@@ -26,7 +28,8 @@ IOKit/XNU kernel.
 ## Build
 
 CI builds the kext on every push (GitHub Actions macOS runner, free for
-public repos). Grab the `QCA9377-kext` artifact from the latest green run.
+public repos). Grab the `QCA9377-kext` artifact from the latest green run,
+or the rolling `kext-latest` release asset (public download, no auth).
 
 Local build on any Mac with Xcode:
 
@@ -59,9 +62,9 @@ and how to fetch it yourself.
 
 | Milestone | Scope | Status |
 |---|---|---|
-| M1 | Ground truth, pinned references, probe skeleton, CI | **in progress** |
-| M2 | Copy Engine rings + BMI handshake (port of `ce.c` / `pci.c` diag window) | — |
-| M3 | Firmware load; `WMI_READY_EVENT` observed | — |
+| M1 | Ground truth, pinned references, probe skeleton, CI | **done** |
+| M2 | Copy Engine rings + BMI handshake (port of `ce.c` / `pci.c` diag window) | **done** |
+| M3 | Firmware load; `WMI_READY_EVENT` observed | **implemented — boot test pending** |
 | M4 | HTT data path | — |
 | M5 | 802.11 MAC (scan/assoc), networks visible | — |
 
