@@ -116,6 +116,12 @@ private:
     void publishNum(const char *key, uint32_t v);
     void publishMac(void);
 
+    // v0.7.0: mirror the stage into NVRAM itself via the /options entry
+    // (IODT plane is NVRAM-backed). "bswork-qca-stage" then survives even a
+    // crashed/never-diag boot; Linux reads it straight from efivars.
+    void nvramStage(const char *stage);
+    class IORegistryEntry *fOptions = nullptr;
+
     uint32_t ceBase(uint32_t ceId);
 };
 

@@ -97,6 +97,12 @@ bool com_bswork_QCA9377::start(IOService *provider)
         return false;
     }
 
+    // /options is the NVRAM-backed registry entry (IODT plane). Grabbing it
+    // once here; nvramStage() mirrors every stage change into it.
+    fOptions = IORegistryEntry::fromPath("/options", gIODTPlane);
+    if (!fOptions)
+        IOLog("QCA9377: /options not available - NVRAM stage mirror disabled\n");
+
     if (!wakeTarget()) {
         IOLog("QCA9377: target did not wake (timeout %u us)\n", kWakeTimeout_us);
         publishStage("FAIL-wake");
@@ -149,7 +155,7 @@ bool com_bswork_QCA9377::start(IOService *provider)
     publishNum("m3-ok", m3ok ? 1 : 0);
     publishNum("m4-ok", m4ok ? 1 : 0);
     publishStage("SUMMARY");
-    IOLog("QCA9377: SUMMARY ok=1 version=0.6.0 pciRev=0x%02x bmiTarget=0x%08x m3=%s m4=%s\n",
+    IOLog("QCA9377: SUMMARY ok=1 version=0.7.0 pciRev=0x%02x bmiTarget=0x%08x m3=%s m4=%s\n",
           fPciRev, fBmi ? fBmi->targetVersion() : 0,
           m3ok ? "BOOTED" : "no",
           m4ok ? "WMI_ONLINE" : "no");
@@ -163,6 +169,10 @@ void com_bswork_QCA9377::stop(IOService *provider)
 {
     IOLog("QCA9377: stop\n");
     teardownHardware();
+    if (fOptions) {
+        fOptions->release();
+        fOptions = nullptr;
+    }
     if (fPci) {
         // Release bus-master first so the target cannot issue new DMA while
         // we disarm rings, then drop memory decodes.
@@ -173,14 +183,26 @@ void com_bswork_QCA9377::stop(IOService *provider)
     super::stop(provider);
 }
 
-// ---- milestone telemetry (v0.6.0) -----------------------------------------
+// ---- milestone telemetry (v0.6.0/v0.7.0) ----------------------------------
 // "qca-*" properties on our own registry node: ioreg keeps them for the
 // node's whole life (dmesg rotates), and the diag's NVRAM report captures
 // the node verbatim. Every M2+ failure path publishes BEFORE teardown on
 // purpose: start() stays true there, so the node survives with the verdict.
+//
+// v0.7.0: the stage is also mirrored into real NVRAM via the /options entry
+// (IODT plane, NVRAM-backed). If start() panics or the diag never runs,
+// Linux still reads "bswork-qca-stage" straight from efivars.
+void com_bswork_QCA9377::nvramStage(const char *stage)
+{
+    if (!fOptions)
+        return;
+    fOptions->setProperty("bswork-qca-stage", stage);
+}
+
 void com_bswork_QCA9377::publishStage(const char *stage)
 {
     setProperty("qca-stage", stage);
+    nvramStage(stage);
 }
 
 void com_bswork_QCA9377::publishNum(const char *key, uint32_t v)
@@ -201,7 +223,6 @@ void com_bswork_QCA9377::publishMac(void)
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     setProperty("qca-mac", text);
 }
-
 uint32_t com_bswork_QCA9377::read32(uint32_t offset)
 {
     return OSReadLittleInt32(fBar0, offset);
@@ -490,7 +511,7 @@ kmod_info_t kmod_info = {
     KMOD_INFO_VERSION,
     0,
     "com.bswork.QCA9377",
-    "0.6.0",
+    "0.7.0",
     -1,
     0, 0, 0, 0,
     qca9377_kmod_start,
