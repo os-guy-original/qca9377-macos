@@ -96,7 +96,9 @@ bool Wmi::parseServiceReady(const uint8_t *p, uint32_t len)
 
     const uint8_t *ev = tb[kTlvSvcReadyEvent].ptr;
     uint16_t evLen = tb[kTlvSvcReadyEvent].len;
-    if (!ev || evLen < 40) {             // through num_rf_chains (+40)
+    // We read through offset 75 (hw_bd_id) below — require the full struct,
+    // not just the first 40 bytes (offset-72 read was a latent OOB).
+    if (!ev || evLen < 76) {
         IOLog("QCA9377-WMI: svc_ready ev missing/short (%u)\n", evLen);
         return false;
     }

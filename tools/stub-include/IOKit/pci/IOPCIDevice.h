@@ -14,6 +14,9 @@ public:
 class IODeviceMemory : public IOMemoryDescriptor_ {};
 class IOPCIDevice : public IOService {
 public:
+    // real SDK: IOKit/pci/IOPCIDevice.h
+    virtual void setMemoryEnable(bool enable);
+    virtual void setBusMasterEnable(bool enable);
     unsigned short configRead16(unsigned off);
     unsigned char  configRead8(unsigned off);
     void configWrite16(unsigned off, unsigned short v);

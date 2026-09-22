@@ -185,12 +185,28 @@ bool CECopyPair::init()
     const uint64_t srcBus = fRegionPhys;
     const uint64_t dstBus = fRegionPhys + ringAligned;
 
-    // Seed indices from current hardware state (previous OS may leave the
-    // rings programmed — warm-boot case).
-    fSrcSw    = read32(ceBase(fSrcCe) + kCECurrentSRRI) & kRingMask;
-    fSrcWrite = read32(ceBase(fSrcCe) + kCESRWrIndex)   & kRingMask;
-    fDstSw    = read32(ceBase(fDstCe) + kCECurrentDRRI) & kRingMask;
-    fDstWrite = read32(ceBase(fDstCe) + kCEDSTWrIndex)  & kRingMask;
+    // Start from zeroed indices, not a hardware-state restore: ring
+    // *locations* are reprogrammed below anyway, so old index values would
+    // point past our freshly seeded descriptors (postRecv would write at
+    // fDstWrite against a DIFFERENT descriptor array, and recvWait would
+    // consume stale entries). ath10k seeds from its own bookkeeping, which
+    // we do not have across an OS boundary.
+    fSrcSw    = 0;
+    fSrcWrite = 0;
+    fDstSw    = 0;
+    fDstWrite = 0;
+
+    // Heartbeat probe before wiring rings: a wedged/dead engine must fail
+    // init here, not hang every later exchange for 10s each.
+    {
+        const uint32_t srri = read32(ceBase(fSrcCe) + kCECurrentSRRI);
+        const uint32_t drri = read32(ceBase(fDstCe) + kCECurrentDRRI);
+        if (srri == 0xffffffffu || drri == 0xffffffffu) {
+            IOLog("QCA9377-CE%u/%u: engine reads 0xffffffff - dead or unmapped\n",
+                  fSrcCe, fDstCe);
+            return false;
+        }
+    }
 
     write32(ceBase(fSrcCe) + kCESRBaseLo, (uint32_t)srcBus);
     write32(ceBase(fSrcCe) + kCESRSize,   kRingN);
@@ -323,8 +339,9 @@ bool CEManager::init()
     fCtrl = new CECopyPair(fBar0, 0, 1);   // CE0 host->t, CE1 t->host
     if (!fCtrl) return false;
     if (!fCtrl->init()) {
-        delete fCtrl; fCtrl = nullptr;
-        return false;
+        delete fCtrl;
+        fCtrl = nullptr;                   // NULL before delete: destroy()
+        return false;                      // must not touch a freed object
     }
     return true;
 }
@@ -335,7 +352,8 @@ bool CEManager::initWmi()
     fWmi = new CECopyPair(fBar0, 3, 2);    // CE3 host->t, CE2 t->host
     if (!fWmi) return false;
     if (!fWmi->init()) {
-        delete fWmi; fWmi = nullptr;
+        delete fWmi;
+        fWmi = nullptr;                    // destroy() would double-free
         IOLog("QCA9377-CE: WMI pair init failed\n");
         return false;
     }

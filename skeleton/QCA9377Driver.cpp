@@ -49,13 +49,22 @@ bool com_bswork_QCA9377::start(IOService *provider)
         return false;
     }
 
+    // Enable PCI memory decodes + bus master BEFORE any BAR or config
+    // probe. IOPCIFamily does not guarantee this on injected/prelinked
+    // paths (unlike a hotplug probe): config reads can complete while the
+    // memory BAR stays decode-disabled, so everything after would
+    // consistently read 0xffffffff and the personality would look dead.
+    fPci->setMemoryEnable(true);
+    fPci->setBusMasterEnable(true);
+    OSSynchronizeIO();
+
     IOLog("QCA9377: start - vendor=0x%04x device=0x%04x rev=0x%02x sub-vendor=0x%04x sub-device=0x%04x\n",
           fPci->configRead16(0x00),
           fPci->configRead16(0x02),
           fPci->configRead8(0x08),
           fPci->configRead16(0x2C),
           fPci->configRead16(0x2E));
-    fPciRev = fPci->configRead8(0x08);
+    fPciRev    = fPci->configRead8(0x08);
     fSubVendor = fPci->configRead16(0x2C);
     fSubDevice = fPci->configRead16(0x2E);
 
@@ -72,17 +81,22 @@ bool com_bswork_QCA9377::start(IOService *provider)
         fBar0Mem->map()->getVirtualAddress();
     if (!fBar0) {
         IOLog("QCA9377: BAR0 map failed\n");
+        fBar0Mem = nullptr;
         return false;
     }
 
     if (!wakeTarget()) {
         IOLog("QCA9377: target did not wake (timeout %u us)\n", kWakeTimeout_us);
+        fBar0 = nullptr;
+        fBar0Mem = nullptr;
         return false;
     }
     IOLog("QCA9377: target awake\n");
 
     if (!probeRegisters()) {
         IOLog("QCA9377: register probe failed\n");
+        fBar0 = nullptr;
+        fBar0Mem = nullptr;
         return false;
     }
 
@@ -94,8 +108,7 @@ bool com_bswork_QCA9377::start(IOService *provider)
 
     }
 
-    // M3: firmware boot (no interrupts yet; poll-only). Only attempted
-
+    // M3: firmware boot (no interrupts yet; poll-only).
     bool m3ok = false;
     if (fBmi && fBmi->targetVersion() != 0) {
         m3ok = bootFirmware();
@@ -112,7 +125,7 @@ bool com_bswork_QCA9377::start(IOService *provider)
         IOLog("QCA9377: M4 skipped - firmware not booted\n");
     }
 
-    IOLog("QCA9377: SUMMARY ok=1 version=0.5.7 pciRev=0x%02x bmiTarget=0x%08x m3=%s m4=%s\n",
+    IOLog("QCA9377: SUMMARY ok=1 version=0.5.8 pciRev=0x%02x bmiTarget=0x%08x m3=%s m4=%s\n",
           fPciRev, fBmi ? fBmi->targetVersion() : 0,
           m3ok ? "BOOTED" : "no",
           m4ok ? "WMI_ONLINE" : "no");
@@ -126,6 +139,13 @@ void com_bswork_QCA9377::stop(IOService *provider)
 {
     IOLog("QCA9377: stop\n");
     teardownHardware();
+    if (fPci) {
+        // Release bus-master first so the target cannot issue new DMA while
+        // we disarm rings, then drop memory decodes.
+        fPci->setBusMasterEnable(false);
+        fPci->setMemoryEnable(false);
+        OSSynchronizeIO();
+    }
     super::stop(provider);
 }
 
@@ -387,7 +407,7 @@ kmod_info_t kmod_info = {
     KMOD_INFO_VERSION,
     0,
     "com.bswork.QCA9377",
-    "0.5.7",
+    "0.5.8",
     -1,
     0, 0, 0, 0,
     qca9377_kmod_start,

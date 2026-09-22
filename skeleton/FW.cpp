@@ -57,7 +57,9 @@ bool Fw::parseFirmware(FwImage *out)
 
         switch (ieId) {
         case kIeFwVersion:
-            if (ieLen < sizeof(out->version)) {
+            // Keep one byte for the NUL: version is char[64], so payload
+            // of exactly 64 would write the terminator at index 64 (OOB).
+            if (ieLen < sizeof(out->version) - 1) {
                 bcopy(data, out->version, ieLen);
                 out->version[ieLen] = '\0';
             }
@@ -235,8 +237,8 @@ bool Fw::runOtp(Bmi *bmi, const uint8_t *otp, uint32_t otpLen,
         return false;
     }
 
-    *boardId = (result & 0x7c00u) >> 10;
-    *chipId  = (result & 0x18000u) >> 15;
+    if (boardId) *boardId = (result & 0x7c00u) >> 10;
+    if (chipId)  *chipId  = (result & 0x18000u) >> 15;
     const bool ok = ((result & 0xffu) == 0) && (*boardId != 0);
     IOLog("QCA9377-FW: otp result 0x%08x board=%u chip=%u valid=%s\n",
           result, *boardId, *chipId, ok ? "yes" : "no");
