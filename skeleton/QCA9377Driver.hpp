@@ -104,13 +104,10 @@ private:
 
     bool probeRegisters(void);
     void probeCopyEngines(void);
-    void logRevisionInfo(void);
-
-    bool probeBmi(void);
-
+    void logRevisionInfo(void);    bool probeBmi(void);
     bool bootFirmware(void);
-
     bool startHtcWmi(void);
+    void teardownHardware(void);
 
     uint32_t ceBase(uint32_t ceId);
 };

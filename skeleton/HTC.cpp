@@ -221,23 +221,39 @@ uint32_t Htc::recvWmi(void *buf, uint32_t bufLen, uint32_t timeoutMs)
 
 bool Htc::waitTarget(uint32_t timeoutMs)
 {
-    // HTC_READY arrives unsolicited on CE1 (eid 0).
-    if (!fCe->postRecv())
-        return false;
+    // HTC_READY arrives unsolicited on CE1 (eid 0). Any pre-READY chatter
+    // (service-available etc.) must not end the wait — keep polling until
+    // READY itself lands or the budget runs out.
+    const uint32_t deadline = timeoutMs * 1000 / kQCAPollStep_us;
+    bool got = false;
+    for (uint32_t i = 0; i < deadline && !got; i++) {
+        if (!fCe->postRecv())
+            return false;
+        if (!fCe->recvWait(timeoutMs))
+            return false;
 
-    if (!fCe->recvWait(timeoutMs))
+        uint8_t *r = fCe->rxBuf();
+        uint32_t rawLen = fCe->rxNbytes();
+        if (rawLen < sizeof(HtcFrameHdr) + sizeof(HtcMsgHdr16)) {
+            IOLog("QCA9377-HTC: ctrl frame too short (%u)\n", rawLen);
+            continue;
+        }
+        uint16_t msgId = rd16(r + sizeof(HtcFrameHdr));
+        if (msgId != kHtcMsgReady) {
+            IOLog("QCA9377-HTC: pre-READY frame id=0x%04x (skip)\n", msgId);
+            continue;
+        }
+        got = true;
+    }
+    if (!got) {
+        IOLog("QCA9377-HTC: no READY within %u ms\n", timeoutMs);
         return false;
+    }
 
     uint8_t *r = fCe->rxBuf();
     uint32_t rawLen = fCe->rxNbytes();
     if (rawLen < sizeof(HtcFrameHdr) + sizeof(HtcMsgHdr16) + sizeof(HtcReady)) {
         IOLog("QCA9377-HTC: ready frame too short (%u)\n", rawLen);
-        return false;
-    }
-
-    uint16_t msgId = rd16(r + sizeof(HtcFrameHdr));
-    if (msgId != kHtcMsgReady) {
-        IOLog("QCA9377-HTC: expected READY, got 0x%04x\n", msgId);
         return false;
     }
 

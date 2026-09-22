@@ -40,7 +40,9 @@ bool Fw::parseFirmware(FwImage *out)
     data += magicPad;
     len  -= magicPad;
 
-    while (len > 8) {
+    // >= 8: an exact-tail IE (8-byte id+len header, empty payload) was
+    // silently skipped by the old `> 8` condition.
+    while (len >= 8) {
         const uint32_t ieId  = rdLe32(data);
         const uint32_t ieLen = rdLe32(data + 4);
         data += 8;
@@ -102,15 +104,23 @@ bool Fw::selectBoard(const uint8_t *board2, uint32_t board2Len,
     const uint8_t *data = board2 + magicPad;
     uint32_t len = board2Len - magicPad;
 
-    char want[64];
-    snprintf(want, sizeof(want),
+    // 75 bytes for the longest name this builds (vendor=168c + 16-bit
+    // subsystem pair) + NUL. v0.5.4 used 64 — snprintf silently truncated
+    // to 63 and the exact-match could NEVER succeed (wrong board data
+    // silently fell back to board.bin). 96 + explicit truncation guard.
+    char want[96];
+    const int nWant = snprintf(want, sizeof(want),
              "bus=pci,vendor=168c,device=0042,"
              "subsystem-vendor=%04x,subsystem-device=%04x",
              subsystemVendor, subsystemDevice);
-    const uint32_t wantLen = (uint32_t)strlen(want);
+    if (nWant < 0 || (uint32_t)nWant >= sizeof(want)) {
+        IOLog("QCA9377-FW: board name truncated (%d) - refusing\n", nWant);
+        return false;
+    }
+    const uint32_t wantLen = (uint32_t)nWant;
 
     bool nameMatch = false;
-    while (len > 8) {
+    while (len >= 8) {
         const uint32_t ieId  = rdLe32(data);
         const uint32_t ieLen = rdLe32(data + 4);
         data += 8;

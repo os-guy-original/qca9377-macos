@@ -112,7 +112,7 @@ bool com_bswork_QCA9377::start(IOService *provider)
         IOLog("QCA9377: M4 skipped - firmware not booted\n");
     }
 
-    IOLog("QCA9377: SUMMARY ok=1 version=0.5.4 pciRev=0x%02x bmiTarget=0x%08x m3=%s m4=%s\n",
+    IOLog("QCA9377: SUMMARY ok=1 version=0.5.5 pciRev=0x%02x bmiTarget=0x%08x m3=%s m4=%s\n",
           fPciRev, fBmi ? fBmi->targetVersion() : 0,
           m3ok ? "BOOTED" : "no",
           m4ok ? "WMI_ONLINE" : "no");
@@ -125,10 +125,7 @@ bool com_bswork_QCA9377::start(IOService *provider)
 void com_bswork_QCA9377::stop(IOService *provider)
 {
     IOLog("QCA9377: stop\n");
-    if (fWmi) { delete fWmi; fWmi = nullptr; }
-    if (fHtc) { delete fHtc; fHtc = nullptr; }
-    if (fBmi) { delete fBmi; fBmi = nullptr; }
-    if (fCe)  { fCe->destroy(); fCe = nullptr; }
+    teardownHardware();
     super::stop(provider);
 }
 
@@ -238,9 +235,21 @@ bool com_bswork_QCA9377::probeBmi(void)
     fBmi = new qca::Bmi(fCe);
     if (!fBmi || !fBmi->getTargetInfo()) {
         IOLog("QCA9377: BMI GET_TARGET_INFO failed\n");
+        teardownHardware();          // release CE DMA region, not leak it
         return false;
     }
     return true;
+}
+
+// Single teardown path: rings parked + DMA released in reverse order of
+// acquisition. Called from stop() and from every failure path so a failed
+// probe never leaves a live DMA region behind.
+void com_bswork_QCA9377::teardownHardware(void)
+{
+    if (fWmi) { delete fWmi; fWmi = nullptr; }
+    if (fHtc) { delete fHtc; fHtc = nullptr; }
+    if (fBmi) { delete fBmi; fBmi = nullptr; }
+    if (fCe)  { fCe->destroy(); fCe = nullptr; }
 }
 
 bool com_bswork_QCA9377::bootFirmware(void)
@@ -249,6 +258,7 @@ bool com_bswork_QCA9377::bootFirmware(void)
     qca::FwImage img;
     if (!qca::Fw::parseFirmware(&img)) {
         IOLog("QCA9377: M3 fw parse failed\n");
+        teardownHardware();
         return false;
     }
 
@@ -266,11 +276,13 @@ bool com_bswork_QCA9377::bootFirmware(void)
 
     if (!qca::Fw::configureTarget(fBmi)) {
         IOLog("QCA9377: M3 configureTarget failed\n");
+        teardownHardware();
         return false;
     }
 
     if (!qca::Fw::downloadBoardData(fBmi, boardData, boardLen)) {
         IOLog("QCA9377: M3 board data failed\n");
+        teardownHardware();
         return false;
     }
 
@@ -285,11 +297,13 @@ bool com_bswork_QCA9377::bootFirmware(void)
 
     if (!qca::Fw::downloadFirmware(fBmi, img.firmware, img.firmwareLen)) {
         IOLog("QCA9377: M3 firmware download failed\n");
+        teardownHardware();
         return false;
     }
 
     if (!qca::Fw::doneAndWaitTargetInit(fBmi, fCe, fBar0)) {
         IOLog("QCA9377: M3 target init wait failed\n");
+        teardownHardware();
         return false;
     }
 
@@ -303,12 +317,14 @@ bool com_bswork_QCA9377::startHtcWmi(void)
 {
     if (!fCe->initWmi()) {
         IOLog("QCA9377: M4 WMI CE pair init failed\n");
+        teardownHardware();
         return false;
     }
 
     fHtc = new qca::Htc(fCe);
     if (!fHtc->waitTarget(10000)) {
         IOLog("QCA9377: M4 HTC_READY not seen\n");
+        teardownHardware();
         return false;
     }
 
@@ -316,16 +332,19 @@ bool com_bswork_QCA9377::startHtcWmi(void)
     uint16_t maxMsg = 0;
     if (!fHtc->connectService(qca::kHtcSvcWmiControl, &eid, &maxMsg)) {
         IOLog("QCA9377: M4 WMI service connect failed\n");
+        teardownHardware();
         return false;
     }
     if (!fHtc->setupComplete()) {
         IOLog("QCA9377: M4 SETUP_COMPLETE failed\n");
+        teardownHardware();
         return false;
     }
 
     fWmi = new qca::Wmi(fHtc, fCe);
     if (!fWmi->waitServiceAndReady(10000)) {
         IOLog("QCA9377: M4 WMI SERVICE_READY/READY failed\n");
+        teardownHardware();
         return false;
     }
 
@@ -368,7 +387,7 @@ kmod_info_t kmod_info = {
     KMOD_INFO_VERSION,
     0,
     "com.bswork.QCA9377",
-    "0.5.4",
+    "0.5.5",
     -1,
     0, 0, 0, 0,
     qca9377_kmod_start,

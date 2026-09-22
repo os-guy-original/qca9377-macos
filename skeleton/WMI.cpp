@@ -86,11 +86,13 @@ bool Wmi::parseServiceReady(const uint8_t *p, uint32_t len)
     fPhyCapab   = rd32(ev + 28);
     fNumRfChains = rd32(ev + 36);
 
-    // First ARRAY_UINT32 = service bitmap.
+    // First ARRAY_UINT32 = service bitmap. Firmware-controlled length:
+    // refuse anything that is not a multiple of 4 (all consumers below
+    // step 4 bytes at a time).
     const uint8_t *bmap = tb[kTlvArrayUInt32].ptr;
     uint16_t bmapLen = tb[kTlvArrayUInt32].len;
-    if (!bmap) {
-        IOLog("QCA9377-WMI: no service bitmap\n");
+    if (!bmap || bmapLen < 4 || (bmapLen & 3u)) {
+        IOLog("QCA9377-WMI: bad service bitmap (len %u)\n", bmapLen);
         return false;
     }
 

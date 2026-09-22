@@ -60,6 +60,9 @@ public:
     // Post rx BEFORE the matching send — ath10k ordering (pci.c:2155-2176);
     // posting after races the target's response.
     bool postRecv();
+    // Number of unconsumed dst entries (posted minus completed). 0 = no
+    // buffer in flight; callers must not post again until this returns 0.
+    uint32_t rxArmed() const                     { return (fDstWrite - fDstSw) & kRingMask; }
     // Wait for the oldest unconsumed dst entry (FIFO, at fDstSw). A
     // nbytes==0 race (descriptor DMA not landed yet) keeps polling instead
     // of failing, exactly like ath10k's completed_recv_next (ce.c:756-786).
@@ -130,9 +133,11 @@ public:
     bool wmiSend(const void *buf, uint32_t len)  { return fWmi->send(buf, len); }
     bool wmiPostRecv()                           { return fWmi->postRecv(); }
     bool wmiRecvWait(uint32_t timeoutMs)         { return fWmi->recvWait(timeoutMs); }
-    // Pre-arm: keep exactly one rx buffer posted on CE2 at all times so an
-    // asynchronous SERVICE_READY can't be dropped before we poll for it.
-    void wmiArmRecv()                            { (void)fWmi->postRecv(); }
+    // Pre-arm: post an rx buffer on CE2 only when none is in flight. The
+    // single shared fRxCpu buffer means a second post while one is pending
+    // would let the engine DMA both entries into the same address
+    // (self-aliasing → torn/duplicated events).
+    void wmiArmRecv()                            { if (fWmi->rxArmed() == 0) (void)fWmi->postRecv(); }
     uint8_t *wmiTxBuf()                          { return fWmi->txBuf(); }
     uint8_t *wmiRxBuf()                          { return fWmi->rxBuf(); }
     uint32_t wmiRxNbytes() const                 { return fWmi->rxNbytes(); }

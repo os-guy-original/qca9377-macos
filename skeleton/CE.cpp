@@ -151,13 +151,25 @@ void CECopyPair::freeRegion()
 
 void CECopyPair::teardown()
 {
-    // Park both rings before releasing DMA memory so the engine cannot
-    // DMA into freed RAM once this kext stops.
+    // Park both rings AND zero the descriptors before releasing DMA memory:
+    // a zeroed sr_base with sr_size=0 keeps the engine from touching freed
+    // RAM even if the target is mid-transfer (worst case: engine fault, not
+    // host memory corruption).
     if (fBar0) {
         write32(ceBase(fSrcCe) + kCESRBaseLo, 0);
         write32(ceBase(fSrcCe) + kCESRSize, 0);
+        write32(ceBase(fSrcCe) + kCESRWrIndex, 0);
         write32(ceBase(fDstCe) + kCEDRBaseLo, 0);
         write32(ceBase(fDstCe) + kCEDRSize, 0);
+        write32(ceBase(fDstCe) + kCEDSTWrIndex, 0);
+        OSSynchronizeIO();
+    }
+    if (fRegionCpu && fRegionSize) {
+        // Poison descriptors so a stale DMA sweep reads len 0, not garbage.
+        for (uint32_t i = 0; i < kRingN; i++) {
+            fSrcDesc[i].addr = 0; fSrcDesc[i].nbytes = 0; fSrcDesc[i].flags = 0;
+            fDstDesc[i].addr = 0; fDstDesc[i].nbytes = 0; fDstDesc[i].flags = 0;
+        }
         OSSynchronizeIO();
     }
     freeRegion();

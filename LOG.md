@@ -188,3 +188,24 @@ fix).
   requires every undefined symbol to resolve via own-externals / kernel /
   declared families — reproduces the boot-log failure matrix exactly
   (old plist: 3 fails = the 3 log-named symbols; fixed: 315/315)
+
+## v0.5.5 — stability pass (2026-09-22)
+
+Offline audit of every module before the next boot test:
+
+- **Board-name match could never succeed**: the constructed match string is
+  75 chars but the buffer was 64 — snprintf silently truncated, so the
+  exact `subsystem-vendor=11ad,subsystem-device=08a6` entry in board-2.bin
+  (verified present, 37 boards parsed) was never selected and the driver
+  always fell back to generic board.bin. Buffer is now 96 with a
+  truncation guard that refuses instead of truncating.
+- **Failure paths leaked DMA regions**: every M2/M3/M4 step now funnels
+  into one teardownHardware() (rings parked, descriptors zeroed, DMA
+  released in reverse order) — also called from stop().
+- **CE rx double-post guard**: the WMI pre-arm could post a second rx
+  descriptor onto the same shared buffer while one was in flight
+  (self-aliasing → torn/duplicated events). wmiArmRecv() now posts only
+  when rxArmed() == 0.
+- **HTC waitTarget** loops until READY instead of failing on any
+  pre-READY chatter frame; IE parsers accept exact-tail IEs (>= 8).
+- **Service bitmap** length validated (multiple of 4) before logging.
