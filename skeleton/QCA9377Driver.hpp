@@ -109,6 +109,13 @@ private:
     bool startHtcWmi(void);
     void teardownHardware(void);
 
+    // Milestone telemetry (v0.6.0): probe progress as "qca-*" properties on
+    // our own registry node. ioreg never evicts, so the diag's NVRAM report
+    // carries the exact milestone chain even when dmesg has rotated.
+    void publishStage(const char *stage);
+    void publishNum(const char *key, uint32_t v);
+    void publishMac(void);
+
     uint32_t ceBase(uint32_t ceId);
 };
 

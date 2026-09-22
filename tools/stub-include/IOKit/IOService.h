@@ -14,6 +14,10 @@ public:
     virtual bool start(IOService *provider);
     virtual void stop(IOService *provider);
     void registerService();
+    // real SDK: IORegistryEntry setProperty overloads (const char* keys auto-wrap)
+    bool setProperty(const char *aKey, const char *value);
+    bool setProperty(const char *aKey, unsigned long long value, unsigned int numberOfBits);
+    bool setProperty(const char *aKey, const void *bytes, unsigned int length);
 };
 #define OSDeclareDefaultStructors(name) \
     static class OSMetaClass * sMeta; \
