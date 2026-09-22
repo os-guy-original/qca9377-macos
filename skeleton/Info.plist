@@ -13,28 +13,11 @@
 	<key>CFBundlePackageType</key>
 	<string>KEXT</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.5.6</string>
-	<key>CFBundleVersion</key>
-	<string>0.5.6</string>
+	<string>0.5.7</string>
 	<key>CFBundleSignature</key>
 	<string>????</string>
-	<key>OSBundleCompatibleVersion</key>
-	<string>0.4.0</string>
-	<key>OSBundleLibraries</key>
-	<dict>
-		<key>com.apple.kpi.iokit</key>
-		<string>23.0</string>
-		<key>com.apple.kpi.libkern</key>
-		<string>23.0</string>
-		<key>com.apple.kpi.mach</key>
-		<string>23.0</string>
-		<key>com.apple.iokit.IOPCIFamily</key>
-		<string>2.9</string>
-		<key>com.apple.kpi.dsep</key>
-		<string>23.0</string>
-	</dict>
-	<key>OSBundleRequired</key>
-	<string>Network-Root</string>
+	<key>CFBundleVersion</key>
+	<string>0.5.7</string>
 	<key>IOKitPersonalities</key>
 	<dict>
 		<key>QCA9377Probe</key>
@@ -43,15 +26,34 @@
 			<string>com.bswork.QCA9377</string>
 			<key>IOClass</key>
 			<string>com_bswork_QCA9377</string>
-			<key>IOProviderClass</key>
-			<string>IOPCIDevice</string>
 			<key>IONameMatch</key>
 			<array>
 				<string>pci168c,42</string>
 			</array>
+			<key>IOPCIMatch</key>
+			<string>0x0042168c</string>
 			<key>IOProbeScore</key>
 			<integer>50000</integer>
+			<key>IOProviderClass</key>
+			<string>IOPCIDevice</string>
 		</dict>
 	</dict>
+	<key>OSBundleCompatibleVersion</key>
+	<string>0.4.0</string>
+	<key>OSBundleLibraries</key>
+	<dict>
+		<key>com.apple.iokit.IOPCIFamily</key>
+		<string>2.9</string>
+		<key>com.apple.kpi.dsep</key>
+		<string>23.0</string>
+		<key>com.apple.kpi.iokit</key>
+		<string>23.0</string>
+		<key>com.apple.kpi.libkern</key>
+		<string>23.0</string>
+		<key>com.apple.kpi.mach</key>
+		<string>23.0</string>
+	</dict>
+	<key>OSBundleRequired</key>
+	<string>Network-Root</string>
 </dict>
 </plist>
