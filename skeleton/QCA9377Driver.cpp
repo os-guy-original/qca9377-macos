@@ -16,6 +16,7 @@
 
 #include "QCA9377Driver.hpp"
 #include "FwData.h"
+#include <IOKit/IORegistryEntry.h>
 #include <cstdio>
 #include <libkern/OSDebug.h>
 #include <libkern/OSKextLib.h>

@@ -28,12 +28,6 @@ public:
     const OSMetaClass * cls::getMetaClass() const { return 0; } \
     cls::cls() {} cls::~cls() {}
 class OSDictionary { public: static OSDictionary *withCapacity(int); void release(); };
-class IORegistryEntry {
-public:
-    static IORegistryEntry *fromPath(const char *path, const void *plane);
-    bool setProperty(const char *aKey, const char *value);
-    void release();
-};
-extern const void *gIODTPlane;
+// IORegistryEntry now stubbed in its own header (mirrors real SDK layout)
 #define OSDynamicCast(type, inst) ((type *)(inst))
 #endif
