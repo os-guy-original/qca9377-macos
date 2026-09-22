@@ -8,6 +8,7 @@
 
 #include "FW.hpp"
 #include "FwData.h"
+#include <cstdio>
 #include <IOKit/IOLib.h>
 #include <libkern/OSByteOrder.h>
 
@@ -22,7 +23,8 @@ static inline uint32_t rdLe32(const uint8_t *p)
     return OSReadLittleInt32(p, 0);
 }
 
-// (core.c:2009-2187), validated empirically against the pinned file
+// ath10k firmware-image parse (ath10k_core_fetch_firmware_files path;
+// container format per core.c:2009-2187), validated against the pinned file
 
 bool Fw::parseFirmware(FwImage *out)
 {

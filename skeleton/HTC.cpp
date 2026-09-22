@@ -144,7 +144,7 @@ bool Htc::sendWmi(const void *payload, uint32_t len)
         return false;
     }
 
-    if (!fCe->wmiPostRecv())             // post rx BEFORE send (ath10k order)
+    if (!fCe->wmiPostRecvIfIdle())      // post rx only when none in flight
         return false;
 
     uint8_t frame[8 + 2048];
@@ -171,6 +171,10 @@ bool Htc::sendWmi(const void *payload, uint32_t len)
 
 uint32_t Htc::recvWmi(void *buf, uint32_t bufLen, uint32_t timeoutMs)
 {
+    // NOTE: does NOT re-arm on return. The WMI wait loop calls
+    // CEManager::wmiArmRecv() (no-op when armed) at the top of every
+    // iteration - one arm point, no double-post window. This function
+    // only consumes: on timeout the armed buffer stays armed.
     if (!fCe->wmiRecvWait(timeoutMs))
         return 0;
 

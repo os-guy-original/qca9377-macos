@@ -27,9 +27,16 @@
 namespace qca {
 
 // wmi_tlv event ids (wmi-tlv.h enum wmi_tlv_event_id).
+// NOTE: command ids are a separate space (wmi_tlv_cmd_id): INIT = 0x1 there,
+// while events use 0x1 = SERVICE_READY, 0x2 = READY.
 enum : uint32_t {
     kWmiTlvEvtServiceReady = 0x1,
     kWmiTlvEvtReady        = 0x2,
+};
+
+// wmi_tlv_cmd_id (wmi-tlv.h:73).
+enum : uint32_t {
+    kWmiTlvCmdInit = 0x1,
 };
 
 // TLV tags (wmi-tlv.h enum wmi_tlv_tag).
@@ -43,6 +50,7 @@ enum : uint16_t {
     kTlvReadyEvent         = 35,
     kTlvInitCmd            = 74,
     kTlvResourceConfig     = 75,
+    kTlvHostMemChunk       = 76,
 };
 
 // WMI cmd/event header: __le32, id in bits 0-23 (wmi.h WMI_CMD_HDR_CMD_ID_MASK).
@@ -52,12 +60,15 @@ class Wmi {
 public:
     Wmi(Htc *htc, CEManager *ce) : fHtc(htc), fCe(ce) {}
 
-    // Blocking wait for SERVICE_READY then READY on the WMI endpoint.
-    // Logs firmware version, ABI, rf chains, service bitmap, MAC.
+    // Blocking boot handshake (core.c:3095-3210 choreography):
+    //   SERVICE_READY (skip unrelated events until it lands)
+    //   -> host sends WMI_INIT (core.c:3206 - without it READY never comes)
+    //   -> READY (skip unrelated events, bounded)
     bool waitServiceAndReady(uint32_t timeoutMs);
 
-    uint32_t swVersion0() const { return fSwVer0; }
-    uint32_t swVersion1() const { return fSwVer1; }
+    uint32_t fwBuild() const { return fFwBuild; }
+    uint32_t abiVersion0() const { return fAbi[0]; }
+    uint32_t numMemReqs() const { return fNumMemReqs; }
     uint32_t phyCapability() const { return fPhyCapab; }
     uint32_t numRfChains() const { return fNumRfChains; }
     void macAddress(uint8_t out[6]) const;
@@ -65,16 +76,17 @@ public:
 private:
     bool parseServiceReady(const uint8_t *p, uint32_t len);
     bool parseReady(const uint8_t *p, uint32_t len);
+    bool sendInit(void);
 
     Htc *fHtc = nullptr;
     CEManager *fCe = nullptr;
 
-    uint32_t fSwVer0 = 0, fSwVer1 = 0;
+    uint32_t fFwBuild = 0;
     uint32_t fPhyCapab = 0;
     uint32_t fNumRfChains = 0;
+    uint32_t fNumMemReqs = 0;
     uint32_t fAbi[6] = {0};
     uint8_t  fMac[6] = {0};
-    bool fGotServiceReady = false;
 };
 
 } // namespace qca

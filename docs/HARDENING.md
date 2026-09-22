@@ -130,3 +130,27 @@ visibility bug that gate v2 catches instantly.
 - [x] `HTC.cpp` dead `uint8_t raw[2048]` in `waitTarget()` — removed
 - [x] `HTC.cpp` unused `static inline wr32()` — removed
 - [x] version bump 0.5.2 → 0.5.3 in the same change set (no drift)
+
+## M4 choreography: SERVICE_READY -> WMI_INIT -> READY (v0.5.6)
+
+The M4 handshake is three phases, not two (core.c:3095-3210):
+
+1. SERVICE_READY arrives on CE2 (unsolicited, after SETUP_COMPLETE).
+2. **Host sends WMI_INIT** (core.c:3206) - TLV frame {cmd hdr, INIT_CMD,
+   RESOURCE_CONFIG, empty ARRAY_STRUCT}. Without this send the target
+   NEVER sends READY; v0.5.5 and earlier timed out here by construction.
+3. READY arrives (core.c:3209). Skip up to 5 unrelated events.
+
+Structural sizes verified by tools/check-constants.py-style recount
+against the pinned header (wmi-tlv.h):
+- wmi_tlv_resource_config = 44 u32 slots (176 B; rx_timeout_pri is [4])
+- wmi_tlv_init_cmd payload = 28 B (abi 24 + num_host_mem_chunks 4)
+- full INIT frame = 232 B; asserted in sendInit()
+
+Buffer safety rules baked into the INIT generator:
+- host mem chunks: none offered (num_host_mem_chunks=0). If firmware
+  sets num_mem_reqs != 0 in SERVICE_READY it is logged - the honest
+  failure is a missing READY, visible in the diag report.
+
+Pre-CI gate: tools/syntax-check.sh (stub IOKit headers, all 6 TUs,
+seconds on Linux). CI remains the authoritative build.

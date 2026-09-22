@@ -138,6 +138,10 @@ public:
     // would let the engine DMA both entries into the same address
     // (self-aliasing → torn/duplicated events).
     void wmiArmRecv()                            { if (fWmi->rxArmed() == 0) (void)fWmi->postRecv(); }
+    // Post-on-send path for WMI commands: HTC sendWmi arms CE2 iff idle
+    // right before its doorbell, so a spontaneous event cannot arrive in
+    // the window where a command response is the expected next frame.
+    bool wmiPostRecvIfIdle()                     { if (fWmi->rxArmed() != 0) return true; return fWmi->postRecv(); }
     uint8_t *wmiTxBuf()                          { return fWmi->txBuf(); }
     uint8_t *wmiRxBuf()                          { return fWmi->rxBuf(); }
     uint32_t wmiRxNbytes() const                 { return fWmi->rxNbytes(); }
