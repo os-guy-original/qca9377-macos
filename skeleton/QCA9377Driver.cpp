@@ -25,6 +25,15 @@
 class IORegistryPlane;
 extern const IORegistryPlane * gIODTPlane;
 
+// Boot-arg parser (pexpert): the kernel exports _PE_parse_boot_argn
+// (verified in the Boot KC symbol table). Self-declared with the exact xnu
+// signature (pexpert.h:351, inside __BEGIN_DECLS = C linkage) instead of
+// including <pexpert/pexpert.h>, whose KERNEL-guarded include set varies by
+// build config. boolean_t == int on mach, so int is the same ABI type.
+extern "C" int PE_parse_boot_argn(const char *arg_string,
+                                  void        *arg_ptr,
+                                  int          max_arg);
+
 #include <cstdio>
 #include <libkern/OSDebug.h>
 #include <libkern/OSKextLib.h>
@@ -53,6 +62,17 @@ bool com_bswork_QCA9377::start(IOService *provider)
     if (!super::start(provider))
         return false;
     publishStage("M0-starting");
+
+    // Staged bring-up cap (default 4 = run everything). PE_parse_boot_argn
+    // returns false when absent, leaving the default untouched.
+    if (!PE_parse_boot_argn("qca-maxstage", &fMaxStage, sizeof(fMaxStage)))
+        fMaxStage = 4;
+    if (fMaxStage < 1 || fMaxStage > 4)
+        fMaxStage = 4;
+    publishNum("maxstage", fMaxStage);
+    if (fMaxStage < 4)
+        IOLog("QCA9377: stage cap %u - M%u and later will be skipped\n",
+              fMaxStage, fMaxStage + 1);
 
     fPci = OSDynamicCast(IOPCIDevice, provider);
     if (!fPci) {
@@ -142,9 +162,13 @@ bool com_bswork_QCA9377::start(IOService *provider)
         publishNum("bmi-target", fBmi ? fBmi->targetVersion() : 0);
     }
 
-    // M3: firmware boot (no interrupts yet; poll-only).
+    // M3: firmware boot (no interrupts yet; poll-only). Stage gate: cap=1
+    // stops after M1, cap=2 after M2.
     bool m3ok = false;
-    if (fBmi && fBmi->targetVersion() != 0) {
+    if (fMaxStage < 3) {
+        IOLog("QCA9377: M3 skipped by stage cap %u\n", fMaxStage);
+        publishStage("M3-skip");
+    } else if (fBmi && fBmi->targetVersion() != 0) {
         m3ok = bootFirmware();
     } else {
         IOLog("QCA9377: M3 skipped - BMI probe did not succeed\n");
@@ -152,9 +176,12 @@ bool com_bswork_QCA9377::start(IOService *provider)
     }
 
     // M4: HTC handshake + WMI-TLV SERVICE_READY/READY (poll-only). Verdict:
-    // target's firmware is alive and talking on CE2/CE3.
+    // target's firmware is alive and talking on CE2/CE3. Gate: cap<=3 skips.
     bool m4ok = false;
-    if (m3ok) {
+    if (fMaxStage < 4) {
+        IOLog("QCA9377: M4 skipped by stage cap %u\n", fMaxStage);
+        publishStage("M4-skip");
+    } else if (m3ok) {
         m4ok = startHtcWmi();
     } else {
         IOLog("QCA9377: M4 skipped - firmware not booted\n");
@@ -164,7 +191,7 @@ bool com_bswork_QCA9377::start(IOService *provider)
     publishNum("m3-ok", m3ok ? 1 : 0);
     publishNum("m4-ok", m4ok ? 1 : 0);
     publishStage("SUMMARY");
-    IOLog("QCA9377: SUMMARY ok=1 version=0.7.0 pciRev=0x%02x bmiTarget=0x%08x m3=%s m4=%s\n",
+    IOLog("QCA9377: SUMMARY ok=1 version=" QCA_DRIVER_VERSION " pciRev=0x%02x bmiTarget=0x%08x m3=%s m4=%s\n",
           fPciRev, fBmi ? fBmi->targetVersion() : 0,
           m3ok ? "BOOTED" : "no",
           m4ok ? "WMI_ONLINE" : "no");
@@ -520,7 +547,7 @@ kmod_info_t kmod_info = {
     KMOD_INFO_VERSION,
     0,
     "com.bswork.QCA9377",
-    "0.7.0",
+    QCA_DRIVER_VERSION,
     -1,
     0, 0, 0, 0,
     qca9377_kmod_start,

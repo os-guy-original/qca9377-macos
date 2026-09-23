@@ -21,6 +21,10 @@
 #ifndef QCA9377Driver_hpp
 #define QCA9377Driver_hpp
 
+// Single source of truth for the version. Info.plist CFBundleVersion must
+// match this string (ocvalidate battery compares the two).
+#define QCA_DRIVER_VERSION "0.7.1"
+
 #include <IOKit/pci/IOPCIDevice.h>
 #include <IOKit/IOService.h>
 #include "CE.hpp"
@@ -108,6 +112,13 @@ private:
     bool bootFirmware(void);
     bool startHtcWmi(void);
     void teardownHardware(void);
+
+    // Staged bring-up gate (v0.7.1): boot-arg "qca-maxstage=1..4" caps how
+    // far start() runs — 1 = M1 only, 2 = +BMI, 3 = +fw boot, 4 = +HTC/WMI
+    // (default). Lets each boot test isolate one stage: a hang deep in M3
+    // firmware boot can no longer destroy the boot's telemetry, and a
+    // failing stage can be probed in isolation with the card left quiet.
+    unsigned fMaxStage = 4;
 
     // Milestone telemetry (v0.6.0): probe progress as "qca-*" properties on
     // our own registry node. ioreg never evicts, so the diag's NVRAM report
