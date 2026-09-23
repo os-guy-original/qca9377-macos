@@ -23,7 +23,7 @@
 
 // Single source of truth for the version. Info.plist CFBundleVersion must
 // match this string (ocvalidate battery compares the two).
-#define QCA_DRIVER_VERSION "0.8.0"
+#define QCA_DRIVER_VERSION "0.9.0"
 
 #include <IOKit/pci/IOPCIDevice.h>
 #include <IOKit/IOService.h>
@@ -52,6 +52,13 @@ static const uint32_t kPCIe_BARReg_Offset    = 0x00040030;
 // SOC-domain reset/control registers (RTC_SOC_BASE + offset). Values from
 // ath10k hw.h/qca6174_regs — byte-verified against the pinned sources.
 static const uint32_t kRTCStateMaskSt        = 0x00000007;
+
+// CORE_CTRL (SOC_CORE_BASE + 0x0): CPU_INTR_MASK is the doorbell that wakes
+// the target CPU — ath10k writes it after CE init, before the first BMI
+// exchange (wake_target_cpu, pci.c).
+static const uint32_t kSocCoreCtrlOffset     = 0x00000000;
+static const uint32_t kCoreCtrlCpuIntrMask   = 0x00002000;
+
 static const uint32_t kSocGlobalResetOffset  = 0x00000008;
 static const uint32_t kSocResetControlOffset = 0x00000000;
 static const uint32_t kSocResetCeRstMask     = 0x00000001;
@@ -138,6 +145,7 @@ private:
     bool coldReset(void);
     bool waitForTargetInit(void);
     bool warmReset(void);
+    void wakeTargetCpu(void);
     void teardownHardware(void);
 
     // Staged bring-up gate (v0.7.1): boot-arg "qca-maxstage=1..4" caps how

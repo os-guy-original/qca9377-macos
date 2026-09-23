@@ -67,6 +67,10 @@ public:
 
     bool getTargetInfo();
 
+    // breadcrumb: which exchange step ran last (for the ioreg verdict when
+    // an exchange times out — post/copyin/copyout/poll-wait/short-resp)
+    const char *lastStage() const { return fLastStage; }
+
     uint32_t targetVersion() const { return fTargetVersion; }
     uint32_t targetType()    const { return fTargetType; }
 
@@ -88,6 +92,7 @@ public:
 private:
     CEManager *fCe = nullptr;
     uint32_t    fTargetVersion = 0;
+    const char *fLastStage = "idle";
     uint32_t    fTargetType    = 0;
     bool        fDoneSent      = false;
 

@@ -24,11 +24,16 @@ bool Bmi::exchangeWait(const void *cmd, uint32_t cmdLen,
 {
     if (fDoneSent) {
         IOLog("QCA9377-BMI: command disallowed after BMI_DONE\n");
+        fLastStage = "after-done";
         return false;
     }
+    fLastStage = "post-recv";
     if (!fCe->postRecv()) return false;
+    fLastStage = "send";
     if (!fCe->send(cmd, cmdLen)) return false;
+    fLastStage = "recv-wait";
     if (!fCe->recvWait(kQCAExchangeTimeout_ms)) return false;
+    fLastStage = "short-resp";
     if (fCe->rxNbytes() < respLen) {
         IOLog("QCA9377-BMI: short response (%u < %u)\n",
               fCe->rxNbytes(), respLen);
@@ -36,6 +41,7 @@ bool Bmi::exchangeWait(const void *cmd, uint32_t cmdLen,
     }
     bcopy(fCe->rxBuf(), resp, respLen);
     if (gotLen) *gotLen = fCe->rxNbytes();
+    fLastStage = "ok";
     return true;
 }
 

@@ -395,6 +395,17 @@ bool com_bswork_QCA9377::warmReset(void)
     return true;
 }
 
+// ath10k wake_target_cpu (pci.c): set CPU_INTR_MASK in CORE_CTRL so the
+// target CPU wakes and services the CE rings. SOC_CORE_BASE + offset form.
+void com_bswork_QCA9377::wakeTargetCpu(void)
+{
+    uint32_t val = read32(kSOC_CoreBaseAddress + kSocCoreCtrlOffset);
+    write32(kSOC_CoreBaseAddress + kSocCoreCtrlOffset,
+            val | kCoreCtrlCpuIntrMask);
+    qlog("QCA9377: target CPU doorbell (CORE_CTRL 0x%08x -> 0x%08x)\n",
+          val, val | kCoreCtrlCpuIntrMask);
+}
+
 // ---- log-tail mirror (v0.7.2) ---------------------------------------------
 // qlog() replaces IOLog in this TU: same dmesg line, plus the text is kept
 // in a scrolling buffer that is mirrored to /options ("bswork-qca-logtail")
@@ -552,15 +563,33 @@ void com_bswork_QCA9377::logRevisionInfo(void)
 bool com_bswork_QCA9377::probeBmi(void)
 {
     fCe = qca::CEManager::create(fBar0);
-    if (!fCe || !fCe->init()) {
-        qlog("QCA9377: CE init failed\n");
-        if (fCe) { fCe->destroy(); fCe = nullptr; }
+    if (!fCe) {
+        qlog("QCA9377: CE create failed\n");
         return false;
     }
+    if (!fCe->init()) {
+        qlog("QCA9377: CE init failed\n");
+        fCe->destroy();
+        fCe = nullptr;
+        return false;
+    }
+
+    // ath10k hif_power_up order: chip reset -> init_pipes -> wake_target_cpu
+    // -> (BMI). The doorbell wakes the target CPU so it can service CE0/CE1.
+    wakeTargetCpu();
+    publishStage("M2-cpu");
+
+    // Re-probe the registers that read 0 pre-reset (boot 0923): if the cold
+    // reset did its job, chip_id must now be real (0xffffffff would mean the
+    // device is gone; 0 means the SOC window is still dead).
+    uint32_t chipId = read32(kSOC_ChipID_Offset);
+    publishNum("chip-id-postreset", chipId);
 
     fBmi = new qca::Bmi(fCe);
     if (!fBmi || !fBmi->getTargetInfo()) {
         qlog("QCA9377: BMI GET_TARGET_INFO failed\n");
+        if (fBmi)
+            setProperty("qca-bmi-stage", fBmi->lastStage());
         teardownHardware();          // release CE DMA region, not leak it
         return false;
     }
