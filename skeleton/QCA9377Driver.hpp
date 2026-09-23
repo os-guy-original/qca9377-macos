@@ -23,7 +23,7 @@
 
 // Single source of truth for the version. Info.plist CFBundleVersion must
 // match this string (ocvalidate battery compares the two).
-#define QCA_DRIVER_VERSION "0.9.3"
+#define QCA_DRIVER_VERSION "0.9.4"
 
 #include <IOKit/pci/IOPCIDevice.h>
 #include <IOKit/IOService.h>
@@ -72,8 +72,13 @@ static const uint32_t kSocLfTimerControl0Offset = 0x00000050;
 static const uint32_t kSocLfTimerEnableMask  = 0x00000004;
 
 // Reset sequencing (v0.8.0): timeouts from ath10k constants.
-static const uint32_t kTargetInitTimeout_ms  = 3000;
+// v0.9.4: the boot-20260923-1827 experiment — cold reset works (chip-id
+// 0x003821FF read correctly post-reset) but the ROM never announced init
+// within 3 s. Widened window + per-second samples to see if it announces
+// LATE (timing) or NEVER (ROM dead in our environment).
+static const uint32_t kTargetInitTimeout_ms  = 10000;
 static const uint32_t kTargetInitStep_ms     = 10;
+static const uint32_t kTargetInitSample_ms   = 1000;
 static const uint32_t kColdResetDelay_ms     = 20;
 static const uint32_t kWarmResetStep_ms      = 10;
 

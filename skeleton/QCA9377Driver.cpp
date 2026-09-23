@@ -323,11 +323,13 @@ bool com_bswork_QCA9377::resetChip(void)
         return false;
     }
     if (!waitForTargetInit()) {
-        // v0.9.3: re-read the probe registers post-reset. If chip-id is
-        // non-zero now, the reset worked and only init-wait is suspect;
-        // if still 0, the SOC core never left reset.
+        // v0.9.3/0.9.4: re-read probe registers post-reset. If chip-id is
+        // non-zero, the reset worked and only init-wait is suspect; if
+        // still 0, the SOC core never left reset.
         publishNum("postreset-chip-id", read32(kSOC_ChipID_Offset));
         publishNum("postreset-bar-reg", read32(kPCIe_BARReg_Offset));
+        publishNum("postreset-rtc-state",
+                   read32(kPCIe_LocalBaseAddress) & kRTCStateMaskSt);
         publishNum("reset-fail", 4);
         return false;
     }
@@ -357,26 +359,39 @@ bool com_bswork_QCA9377::waitForTargetInit(void)
 {
     // Port of ath10k_pci_wait_for_target_init (pci.c:3284), INTX branch:
     // poll FW_INDICATOR (SOC_CORE_BASE + 0x28) until FW_IND_INITIALIZED.
-    uint32_t deadline = kTargetInitTimeout_ms;
-    uint32_t last = 0xffffffff;
-    while (deadline > 0) {
+    // v0.9.4: 10 s window; every second publishes fw-ind-sN + rtc-sN
+    // (RTC power state, PCIe-local domain). Diagnoses: ROM announces late
+    // (samples show it), ROM dead (all zero), SOC auto-sleep (rtc != 3),
+    // decode death (0xffffffff).
+    uint32_t elapsed     = 0;
+    uint32_t nextSample  = 0;
+    uint32_t last        = 0xffffffff;
+    while (elapsed < kTargetInitTimeout_ms) {
         uint32_t val = read32(kFWIndicatorAddress);
         last = val;
         if (val != 0xffffffff) {
             if (val & kFWIndInitialized) {
                 publishNum("fw-indicator", val);
-                qlog("QCA9377: target initialised (fw_ind=0x%08x)\n", val);
+                qlog("QCA9377: target initialised after %u ms (fw_ind=0x%08x)\n",
+                      elapsed, val);
                 return true;
             }
             if (val & kFWIndEventPending)
                 break; // device crashed during init
         }
+        if (elapsed >= nextSample) {
+            char key[16];
+            snprintf(key, sizeof(key), "fw-ind-s%u", nextSample / 1000);
+            publishNum(key, val);
+            snprintf(key, sizeof(key), "rtc-s%u", nextSample / 1000);
+            publishNum(key, read32(kPCIe_LocalBaseAddress) & kRTCStateMaskSt);
+            nextSample += kTargetInitSample_ms;
+        }
         IOSleep(kTargetInitStep_ms);
-        deadline -= kTargetInitStep_ms;
+        elapsed += kTargetInitStep_ms;
     }
-    // v0.9.3 telemetry: publish what the target actually reported so a
-    // timeout is diagnosable (0xffffffff=decode-dead, 0=never started,
-    // EVENT_PENDING=crashed mid-init).
+    // timeout telemetry (0xffffffff=decode-dead, 0=never started,
+    // EVENT_PENDING=crashed mid-init)
     publishNum("fw-ind-last", last);
     qlog("QCA9377: target init wait timed out (last fw_ind=0x%08x)\n", last);
     return false;
