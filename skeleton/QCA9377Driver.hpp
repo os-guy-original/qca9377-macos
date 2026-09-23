@@ -23,7 +23,7 @@
 
 // Single source of truth for the version. Info.plist CFBundleVersion must
 // match this string (ocvalidate battery compares the two).
-#define QCA_DRIVER_VERSION "0.9.1"
+#define QCA_DRIVER_VERSION "0.9.2"
 
 #include <IOKit/pci/IOPCIDevice.h>
 #include <IOKit/IOService.h>
@@ -47,11 +47,12 @@ static const uint32_t kSOC_ChipID_Offset     = kRTC_SOC_BaseAddress + 0x000000F0
 static const uint32_t kPCIe_SOCWake_Offset   = kPCIe_LocalBaseAddress + 0x00000004;
 static const uint32_t kPCIe_SOCWake_V_MASK   = 0x00000001;
 
-static const uint32_t kPCIe_BARReg_Offset    = 0x00040030;
-
-// Host-Interest area base in target RAM (all ath10k PCIe targets,
+static const uint32_t kPCIe_BARReg_Offset    = 0x00040030;// Host-Interest area base in target RAM (all ath10k PCIe targets,
 // targaddrs.h QCA988X_HOST_INTEREST_ADDRESS — shared by QCA6174/9377).
-static const uint32_t kHiBaseAddress         = 0x00400800;
+static const uint32_t kHiBaseAddress                 = 0x00400800;
+
+// HI item offsets (targaddrs.h struct host_interest)
+static const uint32_t kHiInterconnectStateOffset     = 0xf8;
 
 // SOC-domain reset/control registers (RTC_SOC_BASE + offset). Values from
 // ath10k hw.h/qca6174_regs — byte-verified against the pinned sources.
@@ -150,6 +151,7 @@ private:
     bool waitForTargetInit(void);
     bool warmReset(void);
     void wakeTargetCpu(void);
+    bool initConfig(void);
     void teardownHardware(void);
 
     // Staged bring-up gate (v0.7.1): boot-arg "qca-maxstage=1..4" caps how

@@ -220,6 +220,7 @@ public:
     bool diagRead32(uint32_t targAddr, uint32_t *val) { return fDiag ? fDiag->read32(targAddr, val) : false; }
     bool diagWrite32(uint32_t targAddr, uint32_t val) { return fDiag ? fDiag->write32(targAddr, val) : false; }
     bool diagReadMem(uint32_t targAddr, void *out, uint32_t len) { return fDiag ? fDiag->readMem(targAddr, out, len) : false; }
+    bool diagWriteMem(uint32_t targAddr, const void *buf, uint32_t len) { return fDiag ? fDiag->writeMem(targAddr, buf, len) : false; }
 
 private:
     CEManager() = default;

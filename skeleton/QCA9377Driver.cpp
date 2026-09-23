@@ -112,6 +112,9 @@ bool com_bswork_QCA9377::start(IOService *provider)
             capOff = (uint8_t)(fPci->configRead8(capOff + 0x01) & 0xFC);
         }
     }
+    publishNum("aspm-cap-off", fAspmCapOff);
+    publishNum("aspm-ctl", fAspmCtl);
+
     OSSynchronizeIO();
 
     qlog("QCA9377: start - vendor=0x%04x device=0x%04x rev=0x%02x sub-vendor=0x%04x sub-device=0x%04x\n",
@@ -406,6 +409,168 @@ void com_bswork_QCA9377::wakeTargetCpu(void)
           val, val | kCoreCtrlCpuIntrMask);
 }
 
+// ---- target CE configuration (v0.9.2) — port of ath10k_pci_init_config ----
+//
+// All values below are byte-verified against pinned ath10k:
+//   ce_pipe_config            ce.h (6x u32, packed)
+//   pci_target_ce_config_wlan pci.c (CE0..CE9; target receives 7 entries —
+//                             qca6174_values.num_target_ce_config_wlan)
+//   pci_target_service_to_ce_map_wlan pci.c (service_id = group<<8|idx,
+//                             htc.h:261/270)
+//   struct pcie_state         pci.h:42
+//   HI offsets                targaddrs.h (hi_option_flag2 0xcc,
+//                             hi_early_alloc 0x100)
+//   banks                     QCA9377_1_0_DEVICE_ID -> 9 (pci.c:2308)
+struct CePipeConfig {
+    uint32_t pipenum;
+    uint32_t pipedir;
+    uint32_t nentries;
+    uint32_t nbytesMax;
+    uint32_t flags;
+    uint32_t reserved;
+} __attribute__((packed));
+
+struct CeSvcToPipe {
+    uint32_t serviceId;
+    uint32_t pipeDir;
+    uint32_t pipeNum;
+} __attribute__((packed));
+
+static const uint32_t kPipeDirIn  = 1;
+static const uint32_t kPipeDirOut = 2;
+static const uint32_t kPipeDirInOut = 3;
+static const uint32_t kCeAttrDisIntr = 0x8;
+
+static const uint32_t kSvcWmiControl = 0x100;
+static const uint32_t kSvcWmiDataBe  = 0x101;
+static const uint32_t kSvcWmiDataBk  = 0x102;
+static const uint32_t kSvcWmiDataVi  = 0x103;
+static const uint32_t kSvcWmiDataVo  = 0x104;
+static const uint32_t kSvcRsvdCtrl   = 0x001;
+static const uint32_t kSvcTestRaw    = 0xFE00;
+static const uint32_t kSvcHttDataMsg = 0x300;
+
+static const CePipeConfig kTargetCeConfigWlan[] = {
+    { 0, kPipeDirOut,  32,  256, 0,                0 }, // CE0 host->t HTC
+    { 1, kPipeDirIn,   32, 2048, 0,                0 }, // CE1 t->host HTT+HTC
+    { 2, kPipeDirIn,   64, 2048, 0,                0 }, // CE2 t->host WMI
+    { 3, kPipeDirOut,  32, 2048, 0,                0 }, // CE3 host->t WMI
+    { 4, kPipeDirOut, 256,  256, 0,                0 }, // CE4 host->t HTT
+    { 5, kPipeDirIn,   32,  512, 0,                0 }, // CE5 t->host HTT
+    { 6, kPipeDirInOut,32, 4096, 0,                0 }, // CE6 autonomous
+    { 7, kPipeDirInOut, 0,    0, 0,                0 }, // CE7 host-only diag
+    { 8, kPipeDirIn,   64, 2048, kCeAttrDisIntr,   0 }, // CE8 pktlog
+    { 9, kPipeDirInOut,32, 2048, kCeAttrDisIntr,   0 }, // CE9 qcache
+};
+static const uint32_t kNumTargetCeConfig = 7;      // qca6174: send CE0..CE6
+
+static const CeSvcToPipe kTargetSvcToPipeMap[] = {
+    { kSvcWmiDataVo,  kPipeDirOut, 3 },
+    { kSvcWmiDataVo,  kPipeDirIn,  2 },
+    { kSvcWmiDataBk,  kPipeDirOut, 3 },
+    { kSvcWmiDataBk,  kPipeDirIn,  2 },
+    { kSvcWmiDataBe,  kPipeDirOut, 3 },
+    { kSvcWmiDataBe,  kPipeDirIn,  2 },
+    { kSvcWmiDataVi,  kPipeDirOut, 3 },
+    { kSvcWmiDataVi,  kPipeDirIn,  2 },
+    { kSvcWmiControl, kPipeDirOut, 3 },
+    { kSvcWmiControl, kPipeDirIn,  2 },
+    { kSvcRsvdCtrl,   kPipeDirOut, 0 },
+    { kSvcRsvdCtrl,   kPipeDirIn,  1 },
+    { kSvcTestRaw,    kPipeDirOut, 0 },
+    { kSvcTestRaw,    kPipeDirIn,  1 },
+    { kSvcHttDataMsg, kPipeDirOut, 4 },
+    { kSvcHttDataMsg, kPipeDirIn,  5 },
+    { 0, 0, 0 },                                       // terminator
+};
+static const uint32_t kNumSvcToPipe = 17;
+
+// pcie_state field offsets (pci.h:42): pipe_cfg_addr, svc_to_pipe_map,
+// msi_requested, msi_granted, msi_addr, msi_data, msi_fw_intr_data,
+// power_mgmt_method, config_flags
+static const uint32_t kPcieStatePipeCfgOff   = 0x00;
+static const uint32_t kPcieStateSvcMapOff    = 0x04;
+static const uint32_t kPcieStateConfigFlgOff = 0x20;
+static const uint32_t kPcieCfgFlagEnableL1   = 0x00000001;
+
+static const uint32_t kHiOptionFlag2Offset   = 0xcc;   // targaddrs.h:148
+static const uint32_t kHiEarlyAllocOffset    = 0x100;  // targaddrs.h:184
+static const uint32_t kHiOptionEarlyCfgDone  = 0x10;
+static const uint32_t kHiEarlyAllocMagic     = 0x6d8a;
+static const uint32_t kHiEarlyAllocMagicMask = 0xffff0000;
+static const uint32_t kHiEarlyAllocMagicShift = 16;
+static const uint32_t kHiEarlyAllocBanksMask = 0x0000000f;
+static const uint32_t kHiEarlyAllocBanksShift = 0;
+static const uint32_t kQca9377NumBanks       = 9;       // pci.c:2308
+
+bool com_bswork_QCA9377::initConfig(void)
+{
+    // --- walk the interconnect: pcie_state -> pipe cfg + svc map areas ---
+    uint32_t pcieStateAddr = 0;
+    if (!fCe->diagRead32(kHiBaseAddress + kHiInterconnectStateOffset,
+                          &pcieStateAddr) || pcieStateAddr == 0) {
+        qlog("QCA9377: initConfig: pcie_state addr read failed (0x%08x)\n",
+              pcieStateAddr);
+        return false;
+    }
+    qlog("QCA9377: initConfig: pcie_state @ 0x%08x\n", pcieStateAddr);
+
+    uint32_t pipeCfgAddr = 0, svcMapAddr = 0, cfgFlags = 0;
+    if (!fCe->diagRead32(pcieStateAddr + kPcieStatePipeCfgOff, &pipeCfgAddr)
+        || pipeCfgAddr == 0) {
+        qlog("QCA9377: initConfig: pipe_cfg addr invalid\n");
+        return false;
+    }
+    if (!fCe->diagRead32(pcieStateAddr + kPcieStateSvcMapOff, &svcMapAddr)
+        || svcMapAddr == 0) {
+        qlog("QCA9377: initConfig: svc_map addr invalid\n");
+        return false;
+    }
+    // config_flags: clear L1 (target-side ASPM; host side already off)
+    if (!fCe->diagRead32(pcieStateAddr + kPcieStateConfigFlgOff, &cfgFlags))
+        return false;
+    cfgFlags &= ~kPcieCfgFlagEnableL1;
+    if (!fCe->diagWrite32(pcieStateAddr + kPcieStateConfigFlgOff, cfgFlags))
+        return false;
+
+    // --- download pipe config + service map ---
+    if (!fCe->diagWriteMem(pipeCfgAddr, kTargetCeConfigWlan,
+                            kNumTargetCeConfig * sizeof(CePipeConfig))) {
+        qlog("QCA9377: initConfig: pipe cfg download failed\n");
+        return false;
+    }
+    if (!fCe->diagWriteMem(svcMapAddr, kTargetSvcToPipeMap,
+                            kNumSvcToPipe * sizeof(CeSvcToPipe))) {
+        qlog("QCA9377: initConfig: svc map download failed\n");
+        return false;
+    }
+    publishNum("initcfg-pipeaddr", pipeCfgAddr);
+    publishNum("initcfg-svcaddr", svcMapAddr);
+
+    // --- early allocation: 9 IRAM banks, magic in the top half ---
+    uint32_t ealloc = 0;
+    if (!fCe->diagRead32(kHiBaseAddress + kHiEarlyAllocOffset, &ealloc))
+        return false;
+    ealloc |= ((kHiEarlyAllocMagic << kHiEarlyAllocMagicShift)
+               & kHiEarlyAllocMagicMask);
+    ealloc |= ((kQca9377NumBanks << kHiEarlyAllocBanksShift)
+               & kHiEarlyAllocBanksMask);
+    if (!fCe->diagWrite32(kHiBaseAddress + kHiEarlyAllocOffset, ealloc))
+        return false;
+
+    // --- tell the target early configuration is done ---
+    uint32_t flag2 = 0;
+    if (!fCe->diagRead32(kHiBaseAddress + kHiOptionFlag2Offset, &flag2))
+        return false;
+    flag2 |= kHiOptionEarlyCfgDone;
+    if (!fCe->diagWrite32(kHiBaseAddress + kHiOptionFlag2Offset, flag2))
+        return false;
+
+    qlog("QCA9377: initConfig complete (cfg@0x%08x map@0x%08x ealloc=0x%08x flag2=0x%08x)\n",
+          pipeCfgAddr, svcMapAddr, ealloc, flag2);
+    return true;
+}
+
 // ---- log-tail mirror (v0.7.2) ---------------------------------------------
 // qlog() replaces IOLog in this TU: same dmesg line, plus the text is kept
 // in a scrolling buffer that is mirrored to /options ("bswork-qca-logtail")
@@ -574,8 +739,48 @@ bool com_bswork_QCA9377::probeBmi(void)
         return false;
     }
 
-    // ath10k hif_power_up order: chip reset -> init_pipes -> wake_target_cpu
-    // -> (BMI). The doorbell wakes the target CPU so it can service CE0/CE1.
+    // CE7 diag window BEFORE config: init_config programs the target's CE
+    // routing through it (ath10k hif_power_up order: chip reset -> init_pipes
+    // -> init_config -> wake_target_cpu -> BMI).
+    if (!fCe->initDiag()) {
+        publishNum("diag-ready", 0);
+        qlog("QCA9377: CE7 diag window init failed\n");
+        teardownHardware();
+        return false;
+    }
+    publishNum("diag-ready", 1);
+
+    // Interconnect proof of life BEFORE configuring: read the target's
+    // fw_indicator through CE7 and cross-check against direct MMIO.
+    uint32_t hi = 0, mmio = 0;
+    bool diagOk = fCe->diagRead32(kHiBaseAddress + 0x28, &hi);
+    mmio = read32(kSOC_CoreBaseAddress + 0x28);
+    publishNum("diag-fw-ind", hi);
+    if (diagOk) {
+        publishNum("diag-mmio-match", hi == mmio ? 1 : 0);
+        qlog("QCA9377: CE7 diag FW_IND=0x%08x mmio=0x%08x [%s]\n",
+              hi, mmio, hi == mmio ? "MATCH" : "MISMATCH");
+    } else {
+        publishNum("diag-mmio-match", 0);
+        qlog("QCA9377: CE7 diag read of HI fw_ind failed (hi=0x%08x mmio=0x%08x)\n",
+              hi, mmio);
+    }
+
+    // Pre-config HI snapshot (forensics; initConfig rewrites parts of it).
+    uint32_t hiDump[8] = {0};
+    if (fCe->diagReadMem(kHiBaseAddress, hiDump, sizeof(hiDump))) {
+        for (int w = 0; w < 8; w++)
+            qlog("QCA9377: HI[0x%02x] = 0x%08x\n", w * 4, hiDump[w]);
+    }
+
+    if (!initConfig()) {
+        qlog("QCA9377: initConfig failed - target CE config not programmed\n");
+        publishStage("FAIL-initcfg");
+        teardownHardware();
+        return false;
+    }
+    publishStage("M2-initcfg");
+
     wakeTargetCpu();
     publishStage("M2-cpu");
 
@@ -594,37 +799,6 @@ bool com_bswork_QCA9377::probeBmi(void)
         return false;
     }
 
-    // M2.5 smoke test: the CE7 diag window is the gateway to init_config and
-    // the M3 firmware download. Proof of life = read FW_INDICATOR through
-    // the chip interconnect and cross-check against the direct MMIO read.
-    if (!fCe->initDiag()) {
-        publishNum("diag-ready", 0);
-        qlog("QCA9377: CE7 diag window init failed\n");
-        return true;                 // diag failure must not kill the probe
-    }
-    publishNum("diag-ready", 1);
-
-    uint32_t hi = 0, mmio = 0;
-    bool diagOk = fCe->diagRead32(kHiBaseAddress + 0x28, &hi);
-    mmio = read32(kSOC_CoreBaseAddress + 0x28);
-    publishNum("diag-fw-ind", hi);
-    if (diagOk) {
-        publishNum("diag-mmio-match", hi == mmio ? 1 : 0);
-        qlog("QCA9377: CE7 diag FW_IND=0x%08x mmio=0x%08x [%s]\n",
-              hi, mmio, hi == mmio ? "MATCH" : "MISMATCH");
-    } else {
-        publishNum("diag-mmio-match", 0);
-        qlog("QCA9377: CE7 diag read of HI fw_ind failed (hi=0x%08x mmio=0x%08x)\n",
-              hi, mmio);
-    }
-
-    // Forensics: dump the first 8 Host-Interest words (init_config's target
-    // area — hi_app_host_interest, hi_failure_state, hi_dbglog_hdr ...).
-    uint32_t hiDump[8] = {0};
-    if (fCe->diagReadMem(kHiBaseAddress, hiDump, sizeof(hiDump))) {
-        for (int w = 0; w < 8; w++)
-            qlog("QCA9377: HI[0x%02x] = 0x%08x\n", w * 4, hiDump[w]);
-    }
     return true;
 }
 

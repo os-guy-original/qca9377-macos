@@ -4,12 +4,12 @@ A macOS driver for the Qualcomm Atheros **QCA9377** Wi-Fi adapter
 (PCI `168c:0042`), built by adapting the Linux `ath10k` driver to Apple's
 IOKit/XNU kernel.
 
-**Status: v0.5.3 — the full boot chain through M4 is implemented (probe,
-Copy Engines + BMI, firmware load/boot, HTC + WMI-TLV). v0.5.3 fixes the
-root cause of every prior boot rejection (class symbols were hidden by
-`-fvisibility=hidden`; OpenCore's prelinker can only bind exported
-symbols). The next boot test shows whether the firmware answers
-(`WMI_READY_EVENT`); no Wi-Fi yet.** See
+**Status: v0.9.2 — the kext loads, matches, and starts on hardware (M1 done),
+and the bring-up chain is now complete through the CE7 diag window: chip
+cold-reset + wait-for-init, CE0/CE1 rings, target CE configuration download
+(`init_config`), CPU doorbell, BMI handshake with per-step breadcrumbs, and
+cross-checked target-memory access via the interconnect. Next: M3 firmware
+boot, then scan. No Wi-Fi yet.** See
 the [roadmap](#roadmap) for what works and what is still ahead.
 
 ## Why this is possible
@@ -65,10 +65,10 @@ and how to fetch it yourself.
 
 | Milestone | Scope | Status |
 |---|---|---|
-| M1 | Ground truth, pinned references, probe skeleton, CI | **done** |
-| M2 | Copy Engine rings + BMI handshake (port of `ce.c` / `pci.c` diag window) | **done** |
-| M3 | Firmware load; `WMI_READY_EVENT` observed | **implemented — boot test pending** |
-| M4 | HTT data path | — |
+| M1 | Probe skeleton: load/match/start, BAR0, register telemetry | **done (boot-verified)** |
+| M2 | CE rings, chip reset, `init_config`, CPU doorbell, BMI handshake, CE7 diag window | **implemented — boot test pending** |
+| M3 | Firmware load/boot; `WMI_READY_EVENT` | next |
+| M4 | HTC/HTT data path | — |
 | M5 | 802.11 MAC (scan/assoc), networks visible | — |
 
 The `docs/REFERENCE-TRACE.md` file is the Linux `ath10k` probe trace this
