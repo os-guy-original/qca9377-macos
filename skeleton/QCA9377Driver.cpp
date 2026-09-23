@@ -35,8 +35,7 @@ extern "C" int PE_parse_boot_argn(const char *arg_string,
                                   int          max_arg);
 
 #include <cstdio>
-#include <cstdarg>
-#include <cstring>
+#include <stdarg.h>
 #include <libkern/OSDebug.h>
 #include <libkern/OSKextLib.h>
 #include <IOKit/IOLib.h>
@@ -266,25 +265,30 @@ void com_bswork_QCA9377::qlog(const char *fmt, ...)
     char line[256];
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(line, sizeof(line), fmt, ap);
+    // ret = full length the string WOULD have had (may exceed the buffer on
+    // truncation); the bytes actually present are capped by sizeof(line)-1.
+    const int ret = vsnprintf(line, sizeof(line), fmt, ap);
     va_end(ap);
+    if (ret <= 0)
+        return;
 
     IOLog("%s", line);
 
-    const uint32_t len = (uint32_t)strlen(line);
+    const uint32_t len = (uint32_t)ret;
     const uint32_t space = sizeof(fLogTail) - 1 - fLogTailUsed;
     if (len + 1 > space) {
-        // drop oldest half, keep it line-aligned
+        // drop oldest half, keep it line-aligned (bcopy: src, dst order)
         uint32_t cut = fLogTailUsed / 2;
         while (cut < fLogTailUsed && fLogTail[cut] != '\n')
             cut++;
         if (cut < fLogTailUsed)
             cut++;
         fLogTailUsed -= cut;
-        memmove(fLogTail, fLogTail + cut, fLogTailUsed);
+        bcopy(fLogTail + cut, fLogTail, fLogTailUsed);
     }
+    const uint32_t present = (len < sizeof(line)) ? len : (uint32_t)sizeof(line) - 1;
     const uint32_t space2 = sizeof(fLogTail) - 1 - fLogTailUsed;
-    const uint32_t n = (len < space2) ? len : space2;
+    const uint32_t n = (present < space2) ? present : space2;
     bcopy(line, fLogTail + fLogTailUsed, n);
     fLogTailUsed += n;
     fLogTail[fLogTailUsed] = '\0';
