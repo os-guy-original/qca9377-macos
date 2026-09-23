@@ -323,13 +323,19 @@ bool com_bswork_QCA9377::resetChip(void)
         return false;
     }
     if (!waitForTargetInit()) {
-        // v0.9.3/0.9.4: re-read probe registers post-reset. If chip-id is
-        // non-zero, the reset worked and only init-wait is suspect; if
-        // still 0, the SOC core never left reset.
+        // v0.9.5 RESCUE: the cold leg revived the SOC but the ROM stayed
+        // silent (both boots since v0.8.0). ath10k's documented medicine
+        // for exactly this: the warm leg — CPU warm reset forces the ROM
+        // to re-run, with CE pipes up around it.
+        qlog("QCA9377: cold-reset announce failed - trying warm rescue leg\n");
         publishNum("postreset-chip-id", read32(kSOC_ChipID_Offset));
         publishNum("postreset-bar-reg", read32(kPCIe_BARReg_Offset));
         publishNum("postreset-rtc-state",
                    read32(kPCIe_LocalBaseAddress) & kRTCStateMaskSt);
+        if (warmReset()) {
+            publishStage("M2-reset");
+            return true;
+        }
         publishNum("reset-fail", 4);
         return false;
     }
@@ -397,29 +403,65 @@ bool com_bswork_QCA9377::waitForTargetInit(void)
     return false;
 }
 
+// v0.9.5: init_pipes equivalent — create or recreate the CE pair manager.
+// The warm leg resets the CE block mid-sequence, so rings must be
+// reprogrammed; ath10k calls init_pipes twice inside warm_reset.
+bool com_bswork_QCA9377::ensureCE(void)
+{
+    if (fCe && fCe->init())
+        return true;
+    if (fCe) {
+        fCe->destroy();
+        fCe = nullptr;
+    }
+    fCe = qca::CEManager::create(fBar0);
+    if (!fCe)
+        return false;
+    if (!fCe->init()) {
+        fCe->destroy();
+        fCe = nullptr;
+        return false;
+    }
+    return true;
+}
+
+// v0.9.5: full port of ath10k_pci_warm_reset (pci.c:2623) — the medicine
+// for exactly our observed failure: cold reset revives the SOC (rtc=3,
+// chip-id correct) but the ROM never announces. ath10k's comment:
+// "QCA6174 requires cold + warm reset to work." Faithful structure:
+//   si0 → cpu-warm-reset(FW_IND=0) → init_pipes → wait-init
+//   → clear LF timer → CE reset → cpu-warm-reset → init_pipes → wait-init
 bool com_bswork_QCA9377::warmReset(void)
 {
-    // Port of ath10k_pci_warm_reset (pci.c:2623) minus irq/pipe steps:
-    // SI0 reset, CPU warm reset, LF timer disable, CE reset. Each step
-    // publishes a marker so a hang shows exactly where it stopped.
     uint32_t val;
 
-    // si0: RESET_CONTROL(SOC) set/clear SI0_RST (mask 0 on qca6174 - keep
-    // the read-modify-write for faithfulness)
+    // SI0: set/clear SI0_RST (mask 0 on qca6174 — RMW kept for faithfulness)
     val = read32(kRTC_SOC_BaseAddress + kSocResetControlOffset);
     write32(kRTC_SOC_BaseAddress + kSocResetControlOffset, val);
     IOSleep(kWarmResetStep_ms);
     publishStage("warm-si0");
 
-    // cpu: FW_INDICATOR = 0, then CPU_WARM_RST bit
-    write32(kSOC_CoreBaseAddress + 0x28, 0);
+    // CPU warm reset: FW_INDICATOR=0 then CPU_WARM_RST — forces the target
+    // CPU back into the mask ROM
+    write32(kFWIndicatorAddress, 0);
     val = read32(kRTC_SOC_BaseAddress + kSocResetControlOffset);
-    write32(kRTC_SOC_BaseAddress + kSocResetControlOffset, val | kSocResetCpuWarmRstMask);
+    write32(kRTC_SOC_BaseAddress + kSocResetControlOffset,
+            val | kSocResetCpuWarmRstMask);
     publishStage("warm-cpu");
 
-    // lf timer off
+    // interlude 1: init_pipes + wait_for_target_init (ath10k does both here)
+    if (!ensureCE()) {
+        publishNum("warm-fail", 1);
+        qlog("QCA9377: warm reset: CE init failed (interlude 1)\n");
+        return false;
+    }
+    (void)waitForTargetInit(); // non-fatal here; the final wait decides
+    publishStage("warm-wait1");
+
+    // LF timer disable
     val = read32(kRTC_SOC_BaseAddress + kSocLfTimerControl0Offset);
-    write32(kRTC_SOC_BaseAddress + kSocLfTimerControl0Offset, val & ~kSocLfTimerEnableMask);
+    write32(kRTC_SOC_BaseAddress + kSocLfTimerControl0Offset,
+            val & ~kSocLfTimerEnableMask);
     publishStage("warm-lf");
 
     // CE reset set/clear
@@ -429,6 +471,26 @@ bool com_bswork_QCA9377::warmReset(void)
     write32(kRTC_SOC_BaseAddress + kSocResetControlOffset, val & ~kSocResetCeRstMask);
     publishStage("warm-ce");
 
+    // second CPU warm reset (ath10k warm_reset_cpu #2)
+    write32(kFWIndicatorAddress, 0);
+    val = read32(kRTC_SOC_BaseAddress + kSocResetControlOffset);
+    write32(kRTC_SOC_BaseAddress + kSocResetControlOffset,
+            val | kSocResetCpuWarmRstMask);
+    publishStage("warm-cpu2");
+
+    // interlude 2: init_pipes + the decisive wait_for_target_init
+    if (!ensureCE()) {
+        publishNum("warm-fail", 2);
+        qlog("QCA9377: warm reset: CE init failed (interlude 2)\n");
+        return false;
+    }
+    if (!waitForTargetInit()) {
+        publishNum("warm-fail", 3);
+        qlog("QCA9377: warm reset: target never announced after warm leg\n");
+        return false;
+    }
+
+    qlog("QCA9377: warm reset complete - target announced\n");
     return true;
 }
 
@@ -761,15 +823,11 @@ void com_bswork_QCA9377::logRevisionInfo(void)
 
 bool com_bswork_QCA9377::probeBmi(void)
 {
-    fCe = qca::CEManager::create(fBar0);
-    if (!fCe) {
-        qlog("QCA9377: CE create failed\n");
-        return false;
-    }
-    if (!fCe->init()) {
-        qlog("QCA9377: CE init failed\n");
-        fCe->destroy();
-        fCe = nullptr;
+    // v0.9.5: ensureCE (not create) — if the warm rescue leg already built
+    // the CE manager, reuse it; create here would leak it and double-program
+    // the CE0/CE1 rings.
+    if (!ensureCE()) {
+        qlog("QCA9377: CE create/init failed\n");
         return false;
     }
 

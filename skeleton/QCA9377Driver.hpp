@@ -23,7 +23,7 @@
 
 // Single source of truth for the version. Info.plist CFBundleVersion must
 // match this string (ocvalidate battery compares the two).
-#define QCA_DRIVER_VERSION "0.9.4"
+#define QCA_DRIVER_VERSION "0.9.5"
 
 #include <IOKit/pci/IOPCIDevice.h>
 #include <IOKit/IOService.h>
@@ -154,6 +154,12 @@ private:
     bool resetChip(void);
     bool coldReset(void);
     bool waitForTargetInit(void);
+    bool ensureCE(void); // v0.9.5: init_pipes equivalent (create/recreate fCe)
+    // v0.9.5: full ath10k_pci_warm_reset (pci.c:2623) — SI0 + CPU warm reset
+    // + LF timer + CE reset, WITH the init_pipes/wait_for_target_init
+    // interludes (creates/recreates fCe as needed). The rescue path when the
+    // cold reset revives the SOC but the ROM never announces (both boots
+    // since v0.8.0: rtc=3, fw-ind=0 for the whole window).
     bool warmReset(void);
     void wakeTargetCpu(void);
     bool initConfig(void);
