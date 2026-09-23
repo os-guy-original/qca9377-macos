@@ -23,7 +23,7 @@
 
 // Single source of truth for the version. Info.plist CFBundleVersion must
 // match this string (ocvalidate battery compares the two).
-#define QCA_DRIVER_VERSION "0.7.2"
+#define QCA_DRIVER_VERSION "0.8.0"
 
 #include <IOKit/pci/IOPCIDevice.h>
 #include <IOKit/IOService.h>
@@ -48,6 +48,22 @@ static const uint32_t kPCIe_SOCWake_Offset   = kPCIe_LocalBaseAddress + 0x000000
 static const uint32_t kPCIe_SOCWake_V_MASK   = 0x00000001;
 
 static const uint32_t kPCIe_BARReg_Offset    = 0x00040030;
+
+// SOC-domain reset/control registers (RTC_SOC_BASE + offset). Values from
+// ath10k hw.h/qca6174_regs — byte-verified against the pinned sources.
+static const uint32_t kRTCStateMaskSt        = 0x00000007;
+static const uint32_t kSocGlobalResetOffset  = 0x00000008;
+static const uint32_t kSocResetControlOffset = 0x00000000;
+static const uint32_t kSocResetCeRstMask     = 0x00000001;
+static const uint32_t kSocResetCpuWarmRstMask = 0x00000040;
+static const uint32_t kSocLfTimerControl0Offset = 0x00000050;
+static const uint32_t kSocLfTimerEnableMask  = 0x00000004;
+
+// Reset sequencing (v0.8.0): timeouts from ath10k constants.
+static const uint32_t kTargetInitTimeout_ms  = 3000;
+static const uint32_t kTargetInitStep_ms     = 10;
+static const uint32_t kColdResetDelay_ms     = 20;
+static const uint32_t kWarmResetStep_ms      = 10;
 
 static const uint32_t kWakeTimeout_us        = 30000;
 static const uint32_t kWakeStepStart_us      = 5;
@@ -92,6 +108,12 @@ private:
     volatile uint32_t *fBar0  = nullptr;
     IOByteCount     fBar0Len = 0;
     uint8_t         fPciRev  = 0;
+
+    // PCIe link power management (ath10k hif_power_up clears ASPM before
+    // any reset work — L1 PM substates on QCA61x4 are a known hang source).
+    uint16_t        fAspmCtl   = 0;
+    uint8_t         fAspmCapOff = 0;
+
     uint16_t        fSubVendor  = 0;
     uint16_t        fSubDevice  = 0;
 
@@ -108,9 +130,14 @@ private:
 
     bool probeRegisters(void);
     void probeCopyEngines(void);
-    void logRevisionInfo(void);    bool probeBmi(void);
+    void logRevisionInfo(void);
+    bool probeBmi(void);
     bool bootFirmware(void);
     bool startHtcWmi(void);
+    bool resetChip(void);
+    bool coldReset(void);
+    bool waitForTargetInit(void);
+    bool warmReset(void);
     void teardownHardware(void);
 
     // Staged bring-up gate (v0.7.1): boot-arg "qca-maxstage=1..4" caps how

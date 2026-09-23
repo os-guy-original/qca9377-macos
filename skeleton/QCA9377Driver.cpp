@@ -18,12 +18,10 @@
 #include "FwData.h"
 #include <IOKit/IORegistryEntry.h>
 
-// gIODTPlane: the /options NVRAM mirror needs the IODT plane handle. The
-// kernel exports it (_gIODTPlane, verified in the Boot KC symbol table) but
-// current SDK headers no longer declare it (xnu only externs gIOServicePlane/
-// gIOPowerPlane now); declare it exactly as historical xnu did.
-class IORegistryPlane;
-extern const IORegistryPlane * gIODTPlane;
+// IODT plane for the /options NVRAM mirror. Current SDK headers stopped
+// declaring gIODTPlane as an extern global, but IORegistryEntry::getPlane()
+// is exported by the KC (verified: __ZN15IORegistryEntry8getPlaneEPKc) and
+// returns the same plane object by name — no fragile self-declared extern.
 
 // Boot-arg parser (pexpert): the kernel exports _PE_parse_boot_argn
 // (verified in the Boot KC symbol table). Self-declared with the exact xnu
@@ -92,6 +90,28 @@ bool com_bswork_QCA9377::start(IOService *provider)
     // consistently read 0xffffffff and the personality would look dead.
     fPci->setMemoryEnable(true);
     fPci->setBusMasterEnable(true);
+    // ASPM off before any reset work (ath10k hif_power_up: L1 PM substates
+    // on QCA61x4 are a known hang source). Saved for restore in stop().
+    // Capability walk by hand — findPCICapability is NOT exported by the
+    // Recovery KC (verified); configRead8/16 are proven on hardware.
+    if (fPci->configRead16(0x06) & 0x0010) { // status: cap-list present
+        uint8_t capOff = (uint8_t)(fPci->configRead8(0x34) & 0xFC);
+        for (int hops = 0; capOff && hops < 48; hops++) {
+            uint8_t capId = fPci->configRead8(capOff);
+            if (capId == 0x10) { // PCI Express capability
+                fAspmCapOff = capOff;
+                fAspmCtl = fPci->configRead16(capOff + 0x10);
+                if (fAspmCtl & 0x03) {
+                    fPci->configWrite16(capOff + 0x10,
+                                        fAspmCtl & ~(uint16_t)0x0003);
+                    qlog("QCA9377: ASPM L0s/L1 disabled (was 0x%04x)\n",
+                          fAspmCtl);
+                }
+                break;
+            }
+            capOff = (uint8_t)(fPci->configRead8(capOff + 0x01) & 0xFC);
+        }
+    }
     OSSynchronizeIO();
 
     qlog("QCA9377: start - vendor=0x%04x device=0x%04x rev=0x%02x sub-vendor=0x%04x sub-device=0x%04x\n",
@@ -129,9 +149,17 @@ bool com_bswork_QCA9377::start(IOService *provider)
 
     // /options is the NVRAM-backed registry entry (IODT plane). Grabbing it
     // once here; nvramStage() mirrors every stage change into it.
-    fOptions = IORegistryEntry::fromPath("/options", gIODTPlane);
-    if (!fOptions)
+    const IORegistryPlane * iodt = IORegistryEntry::getPlane("IODT");
+    publishNum("nvram-getplane", iodt ? 1 : 0);
+    fOptions = iodt ? IORegistryEntry::fromPath("/options", iodt) : nullptr;
+    if (fOptions) {
+        publishNum("nvram-found", 1);
+        publishNum("nvram-test", 0xBEEF);
+        fOptions->setProperty("bswork-qca-test", "kernel-write-ok");
+    } else {
+        publishNum("nvram-found", 0);
         qlog("QCA9377: /options not available - NVRAM stage mirror disabled\n");
+    }
 
     if (!wakeTarget()) {
         qlog("QCA9377: target did not wake (timeout %u us)\n", kWakeTimeout_us);
@@ -155,7 +183,15 @@ bool com_bswork_QCA9377::start(IOService *provider)
     probeCopyEngines();
     logRevisionInfo();
 
-    if (!probeBmi()) {
+    // M2 gate: bring the target to a known state before CE/BMI. After a warm
+    // reboot from Linux (ath10k loaded, firmware running), the target is in
+    // an undefined state (ath10k hif_power_up comment) — all SOC-domain
+    // reads returned 0 in the 0923 boot. ath10k's medicine for exactly this:
+    // qca6174_chip_reset = cold reset + wait-init (+ warm reset).
+    if (!resetChip()) {
+        qlog("QCA9377: chip reset failed - staying loaded for diagnostics\n");
+        publishStage("FAIL-reset");
+    } else if (!probeBmi()) {
         qlog("QCA9377: M2 BMI probe failed - staying loaded for diagnostics\n");
         publishStage("FAIL-m2-bmi");
     } else {
@@ -215,6 +251,8 @@ void com_bswork_QCA9377::stop(IOService *provider)
         // we disarm rings, then drop memory decodes.
         fPci->setBusMasterEnable(false);
         fPci->setMemoryEnable(false);
+        if (fAspmCapOff && fAspmCtl & 0x03)
+            fPci->configWrite16(fAspmCapOff + 0x10, fAspmCtl);
         OSSynchronizeIO();
     }
     super::stop(provider);
@@ -247,6 +285,114 @@ void com_bswork_QCA9377::publishNum(const char *key, uint32_t v)
     char full[48];
     snprintf(full, sizeof(full), "qca-%s", key);
     setProperty(full, v, 32);
+}
+
+// ---- chip reset (v0.8.0) — ported from ath10k pci.c -----------------------
+// qca6174_chip_reset (pci.c:2751): "QCA6174 requires cold + warm reset to
+// work"; cold reset (pci.c:3341) + wait_for_target_init (pci.c:3284) +
+// warm reset (pci.c:2623). The warm tail needs CE pipes (via init_pipes),
+// so the probe path runs the cold+wait prefix here and the warm tail is
+// re-evaluated after CE init — matching ath10k's own skip when pipes are
+// down.
+bool com_bswork_QCA9377::resetChip(void)
+{
+    qlog("QCA9377: chip reset begin\n");
+    // ath10k wraps every reg access in wake/sleep; after cold reset the
+    // target may auto-sleep, so assert wake before and after the reset.
+    if (!wakeTarget()) {
+        publishNum("reset-fail", 1);
+        return false;
+    }
+    if (!coldReset()) {
+        publishNum("reset-fail", 2);
+        return false;
+    }
+    if (!wakeTarget()) {
+        publishNum("reset-fail", 3);
+        return false;
+    }
+    if (!waitForTargetInit()) {
+        publishNum("reset-fail", 4);
+        return false;
+    }
+    publishStage("M2-reset");
+    return true;
+}
+
+bool com_bswork_QCA9377::coldReset(void)
+{
+    // SOC_GLOBAL_RESET is a reg-domain address: PCIE_LOCAL_BASE + 0x8
+    // (ath10k reg_read32, pci.c:701). Read-modify-write bit0.
+    uint32_t val = read32(kPCIe_LocalBaseAddress + kSocGlobalResetOffset);
+    qlog("QCA9377: cold reset: GLOBAL_RESET=0x%08x\n", val);
+    val |= 1;
+    write32(kPCIe_LocalBaseAddress + kSocGlobalResetOffset, val);
+    // PCIe may not be stable immediately after the reset write (ath10k
+    // pci.c:3350 comment) — mandatory delay before further access.
+    IOSleep(kColdResetDelay_ms);
+    val &= ~(uint32_t)1;
+    write32(kPCIe_LocalBaseAddress + kSocGlobalResetOffset, val);
+    IOSleep(kColdResetDelay_ms);
+    qlog("QCA9377: cold reset complete\n");
+    return true;
+}
+
+bool com_bswork_QCA9377::waitForTargetInit(void)
+{
+    // Port of ath10k_pci_wait_for_target_init (pci.c:3284), INTX branch:
+    // poll FW_INDICATOR (SOC_CORE_BASE + 0x28) until FW_IND_INITIALIZED.
+    uint32_t deadline = kTargetInitTimeout_ms;
+    while (deadline > 0) {
+        uint32_t val = read32(kSOC_CoreBaseAddress + 0x28);
+        if (val != 0xffffffff) {
+            if (val & kFWIndInitialized) {
+                publishNum("fw-indicator", val);
+                qlog("QCA9377: target initialised (fw_ind=0x%08x)\n", val);
+                return true;
+            }
+            if (val & kFWIndEventPending)
+                break; // device crashed during init
+        }
+        IOSleep(kTargetInitStep_ms);
+        deadline -= kTargetInitStep_ms;
+    }
+    qlog("QCA9377: target init wait timed out\n");
+    return false;
+}
+
+bool com_bswork_QCA9377::warmReset(void)
+{
+    // Port of ath10k_pci_warm_reset (pci.c:2623) minus irq/pipe steps:
+    // SI0 reset, CPU warm reset, LF timer disable, CE reset. Each step
+    // publishes a marker so a hang shows exactly where it stopped.
+    uint32_t val;
+
+    // si0: RESET_CONTROL(SOC) set/clear SI0_RST (mask 0 on qca6174 - keep
+    // the read-modify-write for faithfulness)
+    val = read32(kRTC_SOC_BaseAddress + kSocResetControlOffset);
+    write32(kRTC_SOC_BaseAddress + kSocResetControlOffset, val);
+    IOSleep(kWarmResetStep_ms);
+    publishStage("warm-si0");
+
+    // cpu: FW_INDICATOR = 0, then CPU_WARM_RST bit
+    write32(kSOC_CoreBaseAddress + 0x28, 0);
+    val = read32(kRTC_SOC_BaseAddress + kSocResetControlOffset);
+    write32(kRTC_SOC_BaseAddress + kSocResetControlOffset, val | kSocResetCpuWarmRstMask);
+    publishStage("warm-cpu");
+
+    // lf timer off
+    val = read32(kRTC_SOC_BaseAddress + kSocLfTimerControl0Offset);
+    write32(kRTC_SOC_BaseAddress + kSocLfTimerControl0Offset, val & ~kSocLfTimerEnableMask);
+    publishStage("warm-lf");
+
+    // CE reset set/clear
+    val = read32(kRTC_SOC_BaseAddress + kSocResetControlOffset);
+    write32(kRTC_SOC_BaseAddress + kSocResetControlOffset, val | kSocResetCeRstMask);
+    IOSleep(kWarmResetStep_ms);
+    write32(kRTC_SOC_BaseAddress + kSocResetControlOffset, val & ~kSocResetCeRstMask);
+    publishStage("warm-ce");
+
+    return true;
 }
 
 // ---- log-tail mirror (v0.7.2) ---------------------------------------------
