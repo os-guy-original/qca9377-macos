@@ -593,6 +593,38 @@ bool com_bswork_QCA9377::probeBmi(void)
         teardownHardware();          // release CE DMA region, not leak it
         return false;
     }
+
+    // M2.5 smoke test: the CE7 diag window is the gateway to init_config and
+    // the M3 firmware download. Proof of life = read FW_INDICATOR through
+    // the chip interconnect and cross-check against the direct MMIO read.
+    if (!fCe->initDiag()) {
+        publishNum("diag-ready", 0);
+        qlog("QCA9377: CE7 diag window init failed\n");
+        return true;                 // diag failure must not kill the probe
+    }
+    publishNum("diag-ready", 1);
+
+    uint32_t hi = 0, mmio = 0;
+    bool diagOk = fCe->diagRead32(kHiBaseAddress + 0x28, &hi);
+    mmio = read32(kSOC_CoreBaseAddress + 0x28);
+    publishNum("diag-fw-ind", hi);
+    if (diagOk) {
+        publishNum("diag-mmio-match", hi == mmio ? 1 : 0);
+        qlog("QCA9377: CE7 diag FW_IND=0x%08x mmio=0x%08x [%s]\n",
+              hi, mmio, hi == mmio ? "MATCH" : "MISMATCH");
+    } else {
+        publishNum("diag-mmio-match", 0);
+        qlog("QCA9377: CE7 diag read of HI fw_ind failed (hi=0x%08x mmio=0x%08x)\n",
+              hi, mmio);
+    }
+
+    // Forensics: dump the first 8 Host-Interest words (init_config's target
+    // area — hi_app_host_interest, hi_failure_state, hi_dbglog_hdr ...).
+    uint32_t hiDump[8] = {0};
+    if (fCe->diagReadMem(kHiBaseAddress, hiDump, sizeof(hiDump))) {
+        for (int w = 0; w < 8; w++)
+            qlog("QCA9377: HI[0x%02x] = 0x%08x\n", w * 4, hiDump[w]);
+    }
     return true;
 }
 

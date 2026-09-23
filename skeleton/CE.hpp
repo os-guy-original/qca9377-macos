@@ -113,6 +113,67 @@ private:
     uint32_t fRxNbytes   = 0;
 };
 
+// ---------------------------------------------------------------------------
+// CEDiag — CE7 diagnostic window (M2.5), ported from ath10k
+// ath10k_pci_diag_read_mem (pci.c:897) / diag_write_mem (pci.c:1049).
+//
+// CE7 is ONE engine serving both directions (src ring + dst ring on the same
+// register block). Descriptors carry raw addresses and the chip's internal
+// interconnect routes them to target RAM/registers:
+//   read:  dst-desc -> bounce buffer, src-desc -> CE-address of target mem
+//   write: dst-desc -> CE-address of target mem, src-desc -> bounce buffer
+// Target-CPU-address -> CE-address map (qca6174_targ_cpu_to_ce_addr):
+//   ce = ((CORE_CTRL & 0x7ff) << 21) | (addr >= 0x100000 ? 0x100000 : 0)
+//        | (addr & 0xfffff)
+// ---------------------------------------------------------------------------
+class CEDiag {
+public:
+    explicit CEDiag(volatile uint32_t *bar0) : fBar0(bar0) {}
+    ~CEDiag() { teardown(); }
+
+    bool init();
+    void teardown();
+
+    // len must be <= kDiagMax (caller chunks for bigger transfers)
+    bool readMem(uint32_t targAddr, void *out, uint32_t len);
+    bool writeMem(uint32_t targAddr, const void *buf, uint32_t len);
+    bool read32(uint32_t targAddr, uint32_t *val)  { return readMem(targAddr, val, 4); }
+    bool write32(uint32_t targAddr, uint32_t val)  { return writeMem(targAddr, &val, 4); }
+
+private:
+    bool allocRegion();
+    void freeRegion();
+    bool xfer(uint32_t postAddr, uint32_t sendAddr, uint32_t len);
+    uint32_t targToCeAddr(uint32_t addr);
+    uint32_t regRead32(uint32_t off)        { return OSReadLittleInt32(fBar0, off); }
+    void     regWrite32(uint32_t off, uint32_t v) { OSWriteLittleInt32(fBar0, off, v); }
+
+    volatile uint32_t *fBar0;
+
+    IOBufferMemoryDescriptor *fBmd = nullptr;
+    IODMACommand             *fDma = nullptr;
+    bool     fBmdPrepared = false;
+    bool     fDmaPrepared = false;
+    void    *fRegionCpu  = nullptr;
+    uint64_t fRegionPhys = 0;
+    uint32_t fRegionSize = 0;
+
+    CEDescriptor *fSrcDesc = nullptr;
+    CEDescriptor *fDstDesc = nullptr;
+    uint8_t  *fBounce     = nullptr;
+    uint64_t  fBouncePhys = 0;
+
+    uint32_t fSrcWrite = 0, fDstWrite = 0, fSrcSw = 0, fDstSw = 0;
+
+    static const uint32_t kDiagCe      = 7;
+    static const uint32_t kRingN       = 16;
+    static const uint32_t kRingMask    = kRingN - 1;
+    static const uint32_t kDiagMax     = 512;   // bounce size (ath10k chunks at 0x5000)
+    static const uint32_t kWaitStep_us    = 50;    // DIAG_ACCESS_CE_WAIT_US
+    static const uint32_t kWaitTimeout_us = 10000; // DIAG_ACCESS_CE_TIMEOUT_US
+    static const uint32_t kAlign      = 4096;
+};
+
 class CEManager {
 public:
     static CEManager *create(volatile uint32_t *bar0);
@@ -146,6 +207,20 @@ public:
     uint8_t *wmiRxBuf()                          { return fWmi->rxBuf(); }
     uint32_t wmiRxNbytes() const                 { return fWmi->rxNbytes(); }
 
+    // CE7 diag window (M2.5) — raw target-memory access via CE interconnect.
+    bool initDiag() {
+        if (fDiag) return true;
+        fDiag = new CEDiag(fBar0);
+        if (!fDiag || !fDiag->init()) {
+            delete fDiag; fDiag = nullptr;
+            return false;
+        }
+        return true;
+    }
+    bool diagRead32(uint32_t targAddr, uint32_t *val) { return fDiag ? fDiag->read32(targAddr, val) : false; }
+    bool diagWrite32(uint32_t targAddr, uint32_t val) { return fDiag ? fDiag->write32(targAddr, val) : false; }
+    bool diagReadMem(uint32_t targAddr, void *out, uint32_t len) { return fDiag ? fDiag->readMem(targAddr, out, len) : false; }
+
 private:
     CEManager() = default;
     ~CEManager() = default;
@@ -155,6 +230,7 @@ private:
     volatile uint32_t *fBar0 = nullptr;
     CECopyPair *fCtrl = nullptr;
     CECopyPair *fWmi  = nullptr;
+    CEDiag     *fDiag = nullptr;
 };
 
 } // namespace qca

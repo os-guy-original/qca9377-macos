@@ -23,7 +23,7 @@
 
 // Single source of truth for the version. Info.plist CFBundleVersion must
 // match this string (ocvalidate battery compares the two).
-#define QCA_DRIVER_VERSION "0.9.0"
+#define QCA_DRIVER_VERSION "0.9.1"
 
 #include <IOKit/pci/IOPCIDevice.h>
 #include <IOKit/IOService.h>
@@ -48,6 +48,10 @@ static const uint32_t kPCIe_SOCWake_Offset   = kPCIe_LocalBaseAddress + 0x000000
 static const uint32_t kPCIe_SOCWake_V_MASK   = 0x00000001;
 
 static const uint32_t kPCIe_BARReg_Offset    = 0x00040030;
+
+// Host-Interest area base in target RAM (all ath10k PCIe targets,
+// targaddrs.h QCA988X_HOST_INTEREST_ADDRESS — shared by QCA6174/9377).
+static const uint32_t kHiBaseAddress         = 0x00400800;
 
 // SOC-domain reset/control registers (RTC_SOC_BASE + offset). Values from
 // ath10k hw.h/qca6174_regs — byte-verified against the pinned sources.
