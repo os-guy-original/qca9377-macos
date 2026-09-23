@@ -150,18 +150,26 @@ bool com_bswork_QCA9377::start(IOService *provider)
         return false;
     }
 
-    // /options is the NVRAM-backed registry entry (IODT plane). Grabbing it
-    // once here; nvramStage() mirrors every stage change into it.
-    const IORegistryPlane * iodt = IORegistryEntry::getPlane("IODT");
-    publishNum("nvram-getplane", iodt ? 1 : 0);
-    fOptions = iodt ? IORegistryEntry::fromPath("/options", iodt) : nullptr;
-    if (fOptions) {
-        publishNum("nvram-found", 1);
-        publishNum("nvram-test", 0xBEEF);
-        fOptions->setProperty("bswork-qca-test", "kernel-write-ok");
-    } else {
-        publishNum("nvram-found", 0);
-        qlog("QCA9377: /options not available - NVRAM stage mirror disabled\n");
+    // v0.9.3 NVRAM mirror: set properties on the IODTNVRAM *service* — its
+    // setProperty override commits to EFI. (The old /options route died:
+    // getPlane("IODT") returned null in Recovery, and registry-node
+    // properties never reach efivars anyway.) Route uses only KC-verified
+    // symbols: serviceMatching + waitForService (statics), setProperty
+    // through the IORregistryEntry virtual chain. The Linux-side proof is
+    // bswork-qca-test in efivars on next boot.
+    {
+        mach_timespec_t ts = { 3, 0 };
+        OSDictionary *match = IOService::serviceMatching("IODTNVRAM");
+        IOService *svc = match ? IOService::waitForService(match, &ts) : nullptr;
+        if (svc) {
+            fNvram = svc;
+            publishNum("nvram-svc", 1);
+            fNvram->setProperty("bswork-qca-test", "kernel-write-ok");
+            qlog("QCA9377: IODTNVRAM service found - test var written\n");
+        } else {
+            publishNum("nvram-svc", 0);
+            qlog("QCA9377: IODTNVRAM service NOT found - mirror disabled\n");
+        }
     }
 
     if (!wakeTarget()) {
@@ -245,9 +253,9 @@ void com_bswork_QCA9377::stop(IOService *provider)
 {
     qlog("QCA9377: stop\n");
     teardownHardware();
-    if (fOptions) {
-        fOptions->release();
-        fOptions = nullptr;
+    if (fNvram) {
+        fNvram->release();
+        fNvram = nullptr;
     }
     if (fPci) {
         // Release bus-master first so the target cannot issue new DMA while
@@ -267,14 +275,14 @@ void com_bswork_QCA9377::stop(IOService *provider)
 // the node verbatim. Every M2+ failure path publishes BEFORE teardown on
 // purpose: start() stays true there, so the node survives with the verdict.
 //
-// v0.7.0: the stage is also mirrored into real NVRAM via the /options entry
-// (IODT plane, NVRAM-backed). If start() panics or the diag never runs,
-// Linux still reads "bswork-qca-stage" straight from efivars.
+// v0.9.3: the stage is mirrored into real NVRAM by setting the property on
+// the IODTNVRAM service itself (fNvram). If start() panics or the diag never
+// runs, Linux still reads "bswork-qca-stage" straight from efivars.
 void com_bswork_QCA9377::nvramStage(const char *stage)
 {
-    if (!fOptions)
+    if (!fNvram)
         return;
-    fOptions->setProperty("bswork-qca-stage", stage);
+    fNvram->setProperty("bswork-qca-stage", stage);
 }
 
 void com_bswork_QCA9377::publishStage(const char *stage)
@@ -315,6 +323,11 @@ bool com_bswork_QCA9377::resetChip(void)
         return false;
     }
     if (!waitForTargetInit()) {
+        // v0.9.3: re-read the probe registers post-reset. If chip-id is
+        // non-zero now, the reset worked and only init-wait is suspect;
+        // if still 0, the SOC core never left reset.
+        publishNum("postreset-chip-id", read32(kSOC_ChipID_Offset));
+        publishNum("postreset-bar-reg", read32(kPCIe_BARReg_Offset));
         publishNum("reset-fail", 4);
         return false;
     }
@@ -345,8 +358,10 @@ bool com_bswork_QCA9377::waitForTargetInit(void)
     // Port of ath10k_pci_wait_for_target_init (pci.c:3284), INTX branch:
     // poll FW_INDICATOR (SOC_CORE_BASE + 0x28) until FW_IND_INITIALIZED.
     uint32_t deadline = kTargetInitTimeout_ms;
+    uint32_t last = 0xffffffff;
     while (deadline > 0) {
-        uint32_t val = read32(kSOC_CoreBaseAddress + 0x28);
+        uint32_t val = read32(kFWIndicatorAddress);
+        last = val;
         if (val != 0xffffffff) {
             if (val & kFWIndInitialized) {
                 publishNum("fw-indicator", val);
@@ -359,7 +374,11 @@ bool com_bswork_QCA9377::waitForTargetInit(void)
         IOSleep(kTargetInitStep_ms);
         deadline -= kTargetInitStep_ms;
     }
-    qlog("QCA9377: target init wait timed out\n");
+    // v0.9.3 telemetry: publish what the target actually reported so a
+    // timeout is diagnosable (0xffffffff=decode-dead, 0=never started,
+    // EVENT_PENDING=crashed mid-init).
+    publishNum("fw-ind-last", last);
+    qlog("QCA9377: target init wait timed out (last fw_ind=0x%08x)\n", last);
     return false;
 }
 
@@ -578,8 +597,8 @@ bool com_bswork_QCA9377::initConfig(void)
 // last ~20 lines — no stage boundary required.
 void com_bswork_QCA9377::logTailFlush(void)
 {
-    if (fOptions)
-        fOptions->setProperty("bswork-qca-logtail", fLogTail);
+    if (fNvram)
+        fNvram->setProperty("bswork-qca-logtail", fLogTail);
 }
 
 void com_bswork_QCA9377::qlog(const char *fmt, ...)

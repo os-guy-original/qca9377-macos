@@ -23,7 +23,7 @@
 
 // Single source of truth for the version. Info.plist CFBundleVersion must
 // match this string (ocvalidate battery compares the two).
-#define QCA_DRIVER_VERSION "0.9.2"
+#define QCA_DRIVER_VERSION "0.9.3"
 
 #include <IOKit/pci/IOPCIDevice.h>
 #include <IOKit/IOService.h>
@@ -172,7 +172,9 @@ private:
     // (IODT plane is NVRAM-backed). "bswork-qca-stage" then survives even a
     // crashed/never-diag boot; Linux reads it straight from efivars.
     void nvramStage(const char *stage);
-    class IORegistryEntry *fOptions = nullptr;
+    // v0.9.3: the IODTNVRAM *service* — properties set on it commit to EFI
+    // (registry nodes like /options never did; that was the v0.7.2 bug).
+    class IOService *fNvram = nullptr;
 
     // v0.7.2: log-tail mirror. qlog() = IOLog + append to a scrolling buffer
     // + mirror the buffer to /options as "bswork-qca-logtail" on every line,
