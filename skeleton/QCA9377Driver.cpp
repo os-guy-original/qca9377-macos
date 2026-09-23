@@ -17,6 +17,14 @@
 #include "QCA9377Driver.hpp"
 #include "FwData.h"
 #include <IOKit/IORegistryEntry.h>
+
+// gIODTPlane: the /options NVRAM mirror needs the IODT plane handle. The
+// kernel exports it (_gIODTPlane, verified in the Boot KC symbol table) but
+// current SDK headers no longer declare it (xnu only externs gIOServicePlane/
+// gIOPowerPlane now); declare it exactly as historical xnu did.
+class IORegistryPlane;
+extern const IORegistryPlane * gIODTPlane;
+
 #include <cstdio>
 #include <libkern/OSDebug.h>
 #include <libkern/OSKextLib.h>
