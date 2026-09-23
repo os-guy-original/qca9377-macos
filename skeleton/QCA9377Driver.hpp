@@ -23,7 +23,7 @@
 
 // Single source of truth for the version. Info.plist CFBundleVersion must
 // match this string (ocvalidate battery compares the two).
-#define QCA_DRIVER_VERSION "0.7.1"
+#define QCA_DRIVER_VERSION "0.7.2"
 
 #include <IOKit/pci/IOPCIDevice.h>
 #include <IOKit/IOService.h>
@@ -132,6 +132,14 @@ private:
     // crashed/never-diag boot; Linux reads it straight from efivars.
     void nvramStage(const char *stage);
     class IORegistryEntry *fOptions = nullptr;
+
+    // v0.7.2: log-tail mirror. qlog() = IOLog + append to a scrolling buffer
+    // + mirror the buffer to /options as "bswork-qca-logtail" on every line,
+    // so the last ~20 messages survive ANY hang (not just between stages).
+    void qlog(const char *fmt, ...);
+    void logTailFlush(void);
+    char     fLogTail[1536] = {0};
+    unsigned fLogTailUsed   = 0;
 
     uint32_t ceBase(uint32_t ceId);
 };
